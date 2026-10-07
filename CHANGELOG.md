@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.1.0 — 2026-10-07
+- `yt-pubx atualizar <id|URL>`: edita título, descrição ou tags de um vídeo já publicado.
+
 ## 2.0.0 — 2026-10-07
 - Ferramenta independente: config em `~/.config/yt-pubx/config.json`, canais ilimitados.
 - `yt-pubx init` e `yt-pubx auth` (OAuth "App para computador" com PKCE, escopos de upload, gerência e legendas).

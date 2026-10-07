@@ -167,6 +167,12 @@ to make it explicit.
 **Outputs:** `~/.local/share/yt-pubx/trabalhos/<date>-<name>/` (plano.json, thumb.jpg, thumb_arte.png)
 and `~/.local/share/yt-pubx/historico.jsonl` (one line per publication).
 
+**Edit a video that is already published** (title, description or tags; everything else stays as is):
+
+```bash
+./yt-pubx atualizar https://www.youtube.com/watch?v=XXXXXXXXXXX --canal lives1 --description-arquivo descricao.txt
+```
+
 ## 6. Use with an agent (Claude Code, Codex)
 
 Put this in your agent's instructions (CLAUDE.md / AGENTS.md):

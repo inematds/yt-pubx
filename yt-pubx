@@ -5,6 +5,7 @@
   yt-pubx auth <canal> --client-secret arq.json  autoriza um canal (OAuth, uma vez)
   yt-pubx canais                                 lista os canais configurados
   yt-pubx publicar <arquivo|URL> [--canal X] [opções]
+  yt-pubx atualizar <id|URL> [--description-arquivo X] edita um vídeo já publicado
 
 Sem --title/--description, o Codex CLI escreve título, descrição, tags, frase e cena
 da thumb a partir de --contexto / --contexto-arquivo / --legenda. A arte da thumb sai
@@ -14,7 +15,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime
 
-VERSION = '2.0.0'
+VERSION = '2.1.0'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -572,6 +573,39 @@ def cmd_publicar(a):
     print(f'\nURL: {url}\nSTUDIO: https://studio.youtube.com/video/{vid}/edit')
 
 
+def cmd_atualizar(a):
+    """Edita título/descrição/tags de um vídeo já publicado (videos.update)."""
+    import requests
+    cfg = load_config()
+    nome, c = canal(cfg, a.canal)
+    token = access_token(nome, c)
+    vid = re.sub(r'.*(?:v=|youtu\.be/|/video/)([\w-]{11}).*', r'\1', a.video)
+    h = {'Authorization': f'Bearer {token}'}
+    r = requests.get('https://www.googleapis.com/youtube/v3/videos',
+                     params={'part': 'snippet', 'id': vid}, headers=h, timeout=30)
+    itens = r.json().get('items') if r.status_code == 200 else None
+    if not itens:
+        die(f'vídeo {vid} não encontrado no canal {nome} ({r.status_code}): {r.text[:200]}')
+    sn = itens[0]['snippet']
+    novo = {'title': sn['title'], 'description': sn.get('description', ''),
+            'tags': sn.get('tags', []), 'categoryId': sn['categoryId']}
+    if sn.get('defaultLanguage'):
+        novo['defaultLanguage'] = sn['defaultLanguage']
+    if a.title:
+        novo['title'] = limpa(a.title, 100)
+    if a.description or a.description_arquivo:
+        desc = a.description or open(a.description_arquivo, encoding='utf-8').read()
+        novo['description'] = limpa(desc, 5000)
+    if a.tags:
+        novo['tags'] = [t.strip() for t in a.tags.split(',') if t.strip()]
+    r = requests.put('https://www.googleapis.com/youtube/v3/videos', params={'part': 'snippet'},
+                     headers={**h, 'Content-Type': 'application/json'},
+                     data=json.dumps({'id': vid, 'snippet': novo}).encode(), timeout=60)
+    if r.status_code != 200:
+        die(f'atualização recusada ({r.status_code}): {r.text[:300]}')
+    log(f'Atualizado: https://www.youtube.com/watch?v={vid}')
+
+
 def main():
     p = argparse.ArgumentParser(prog='yt-pubx', description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -606,6 +640,14 @@ def main():
     q.add_argument('--dry-run', action='store_true', help='gera tudo e para antes de enviar')
     q.add_argument('--manter', action='store_true', help='não apaga o vídeo baixado de URL')
     q.set_defaults(fn=cmd_publicar)
+    u = sub.add_parser('atualizar', help='edita título/descrição/tags de um vídeo publicado')
+    u.add_argument('video', help='id ou URL do vídeo')
+    u.add_argument('--canal')
+    u.add_argument('--title')
+    u.add_argument('--description')
+    u.add_argument('--description-arquivo', help='arquivo com a descrição nova')
+    u.add_argument('--tags', help='separadas por vírgula')
+    u.set_defaults(fn=cmd_atualizar)
     a = p.parse_args()
     a.fn(a)
 

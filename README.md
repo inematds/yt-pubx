@@ -167,6 +167,12 @@ deixar explícito.
 **Saídas:** `~/.local/share/yt-pubx/trabalhos/<data>-<nome>/` (plano.json, thumb.jpg, thumb_arte.png)
 e `~/.local/share/yt-pubx/historico.jsonl` (uma linha por publicação).
 
+**Editar um vídeo já publicado** (título, descrição ou tags; o resto fica como está):
+
+```bash
+./yt-pubx atualizar https://www.youtube.com/watch?v=XXXXXXXXXXX --canal lives1 --description-arquivo descricao.txt
+```
+
 ## 6. Usar com um agente (Claude Code, Codex)
 
 Ponha numa instrução do seu agente (CLAUDE.md / AGENTS.md):
