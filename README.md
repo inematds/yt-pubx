@@ -1,6 +1,18 @@
 # yt-pubx — publique qualquer vídeo no YouTube com um comando
 
-**PT** · [EN](README.en.md) · [ES](README.es.md)
+[![yt-pubx](guia/assets/banner.jpg)](https://inematds.github.io/yt-pubx/guia/)
+
+**🇧🇷 [Português](README.md) · 🇺🇸 [English](README.en.md) · 🇪🇸 [Español](README.es.md)**
+
+## O que é
+
+O yt-pubx é um programa de linha de comando que publica vídeos no YouTube por você. Ele serve para quem publica com frequência, em um ou vários canais, e não quer preencher título, descrição, tags e thumb à mão toda vez. A partir de um texto curto ou da legenda do vídeo, o Codex CLI escreve os textos e cria a arte da thumb, e o yt-pubx envia tudo pela API oficial do YouTube. Para usar, você precisa de Python, do Codex CLI logado e de um projeto gratuito no Google Cloud com a YouTube Data API ativada.
+
+## 📖 Guia de uso
+
+Guia completo (landing + passo a passo): **https://inematds.github.io/yt-pubx/guia/**
+
+---
 
 Você aponta um vídeo (arquivo ou link) e o `yt-pubx` faz o resto:
 
