@@ -1,0 +1,614 @@
+#!/usr/bin/env python3
+"""yt-pubx — publica um vídeo direto no YouTube, com título, descrição, tags e thumb.
+
+  yt-pubx init                                   cria ~/.config/yt-pubx/config.json
+  yt-pubx auth <canal> --client-secret arq.json  autoriza um canal (OAuth, uma vez)
+  yt-pubx canais                                 lista os canais configurados
+  yt-pubx publicar <arquivo|URL> [--canal X] [opções]
+
+Sem --title/--description, o Codex CLI escreve título, descrição, tags, frase e cena
+da thumb a partir de --contexto / --contexto-arquivo / --legenda. A arte da thumb sai
+do gerador de imagem do Codex (image_gen); um servidor de imagem local é reserva opcional.
+"""
+import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
+import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
+from datetime import datetime
+
+VERSION = '2.0.0'
+CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
+CONFIG = os.path.join(CONFIG_DIR, 'config.json')
+DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
+TRABALHOS = os.path.join(DATA_DIR, 'trabalhos')
+HISTORICO = os.path.join(DATA_DIR, 'historico.jsonl')
+SCOPES = ['https://www.googleapis.com/auth/youtube.upload',
+          'https://www.googleapis.com/auth/youtube',
+          'https://www.googleapis.com/auth/youtube.force-ssl']
+CHUNK = 16 * 1024 * 1024
+THUMB_MAX = 2 * 1024 * 1024
+W, H = 1280, 720
+
+EXEMPLO = {
+    'canal_padrao': 'principal',
+    'codex_modelo': '',
+    'baixador': 'yt-dlp -f "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b" -o "{outdir}/%(title).80s.%(ext)s" {url}',
+    'imagem_reserva': {'url': '', 'modelo': ''},
+    'canais': {
+        'principal': {
+            'nome': 'Meu Canal',
+            'url': 'https://www.youtube.com/@meucanal',
+            'sobre': 'Canal de tutoriais sobre ...',
+            'assinatura': 'Inscreva-se: https://www.youtube.com/@meucanal',
+            'idioma': 'pt',
+            'categoria': '27',
+            'privacy': 'public',
+            'thumb': {'marca': 'MEU CANAL', 'fonte': '', 'cor_texto': '#ffffff',
+                      'cor_marca': '#f0e805', 'cor_destaque': '#f91f06'},
+        }
+    },
+}
+
+
+def log(msg):
+    print(f'[yt-pubx {datetime.now():%H:%M:%S}] {msg}', flush=True)
+
+
+def die(msg):
+    log(f'ERRO: {msg}')
+    sys.exit(1)
+
+
+# ── config e canais ─────────────────────────────────────────────────────────
+def load_config():
+    if not os.path.exists(CONFIG):
+        die(f'sem configuração: rode "yt-pubx init" e edite {CONFIG}')
+    return json.load(open(CONFIG, encoding='utf-8'))
+
+
+def save_config(cfg):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = CONFIG + '.tmp'
+    json.dump(cfg, open(tmp, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    os.replace(tmp, CONFIG)
+
+
+def canal(cfg, nome):
+    nome = nome or cfg.get('canal_padrao')
+    c = cfg.get('canais', {}).get(nome)
+    if not c:
+        die(f'canal "{nome}" não está no {CONFIG} (veja: yt-pubx canais)')
+    return nome, c
+
+
+def cmd_init(_):
+    if os.path.exists(CONFIG):
+        die(f'{CONFIG} já existe')
+    save_config(EXEMPLO)
+    os.chmod(CONFIG, 0o600)
+    print(f'Criado {CONFIG}. Edite o canal "principal" e rode:\n'
+          f'  yt-pubx auth principal --client-secret ~/Downloads/client_secret_XXX.json')
+
+
+def cmd_canais(_):
+    cfg = load_config()
+    for nome, c in cfg.get('canais', {}).items():
+        pad = '*' if nome == cfg.get('canal_padrao') else ' '
+        ok = 'ok' if (c.get('credenciais_cmd') or os.path.exists(token_path(nome))) else 'SEM AUTH'
+        print(f'{pad} {nome:12} {c.get("nome", ""):20} {c.get("url", ""):45} {ok}')
+
+
+def token_path(nome):
+    return os.path.join(CONFIG_DIR, 'tokens', f'{nome}.json')
+
+
+def credenciais(nome, c):
+    """{client_id, client_secret, refresh_token} do arquivo de token ou de um comando."""
+    if c.get('credenciais_cmd'):
+        r = subprocess.run(c['credenciais_cmd'], shell=True, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            die(f'credenciais_cmd do canal {nome} falhou: {r.stderr.strip()[:200]}')
+        return json.loads(r.stdout)
+    p = token_path(nome)
+    if not os.path.exists(p):
+        die(f'canal {nome} sem autorização: rode "yt-pubx auth {nome} --client-secret <arquivo>"')
+    return json.load(open(p))
+
+
+def access_token(nome, c):
+    import requests
+    cr = credenciais(nome, c)
+    r = requests.post('https://oauth2.googleapis.com/token', data={
+        'client_id': cr['client_id'], 'client_secret': cr['client_secret'],
+        'refresh_token': cr['refresh_token'], 'grant_type': 'refresh_token'}, timeout=30)
+    if r.status_code != 200:
+        die(f'token OAuth recusado ({r.status_code}): rode de novo "yt-pubx auth {nome}"')
+    return r.json()['access_token']
+
+
+def cmd_auth(a):
+    """OAuth 'app para computador' com retorno em localhost (porta livre)."""
+    import requests
+    cfg = load_config()
+    nome, c = canal(cfg, a.canal)
+    sec = json.load(open(os.path.expanduser(a.client_secret)))
+    sec = sec.get('installed') or sec.get('web') or sec
+    cid, csec = sec['client_id'], sec['client_secret']
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    state = secrets.token_urlsafe(16)
+    got = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if q.get('state', [''])[0] == state:
+                got.update({k: v[0] for k, v in q.items()})
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write('<h2>yt-pubx: pode fechar esta aba.</h2>'.encode())
+
+        def log_message(self, *_):
+            pass
+
+    srv = http.server.HTTPServer(('127.0.0.1', a.porta), H)
+    redirect = f'http://127.0.0.1:{srv.server_port}'
+    url = 'https://accounts.google.com/o/oauth2/v2/auth?' + urllib.parse.urlencode({
+        'client_id': cid, 'redirect_uri': redirect, 'response_type': 'code', 'scope': ' '.join(SCOPES),
+        'access_type': 'offline', 'prompt': 'consent', 'state': state,
+        'code_challenge': challenge, 'code_challenge_method': 'S256'})
+    print(f'\nAbra no navegador, logado na conta Google DONA do canal "{c.get("nome", nome)}":\n\n{url}\n', flush=True)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    fim = time.time() + 600
+    while 'code' not in got and 'error' not in got and time.time() < fim:
+        time.sleep(0.5)
+    srv.shutdown()
+    if 'code' not in got:
+        die(f'autorização não concluída ({got.get("error", "tempo esgotado")})')
+    r = requests.post('https://oauth2.googleapis.com/token', data={
+        'code': got['code'], 'client_id': cid, 'client_secret': csec, 'redirect_uri': redirect,
+        'grant_type': 'authorization_code', 'code_verifier': verifier}, timeout=30)
+    tok = r.json()
+    if 'refresh_token' not in tok:
+        die(f'Google não devolveu refresh_token: {r.text[:300]}')
+    os.makedirs(os.path.dirname(token_path(nome)), exist_ok=True)
+    with open(token_path(nome), 'w') as f:
+        json.dump({'client_id': cid, 'client_secret': csec, 'refresh_token': tok['refresh_token']}, f)
+    os.chmod(token_path(nome), 0o600)
+    ch = requests.get('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true',
+                      headers={'Authorization': f'Bearer {tok["access_token"]}'}, timeout=30).json()
+    titulos = [i['snippet']['title'] for i in ch.get('items', [])]
+    log(f'Canal {nome} autorizado: {", ".join(titulos) or "(conta sem canal?)"} → {token_path(nome)}')
+
+
+# ── vídeo de entrada ────────────────────────────────────────────────────────
+def obter_video(src, work, cfg):
+    """Retorna (caminho, baixado?)."""
+    if not re.match(r'https?://', src):
+        p = os.path.realpath(os.path.expanduser(src))
+        if not os.path.isfile(p):
+            die(f'arquivo não encontrado: {p}')
+        return p, False
+    import requests
+    if re.search(r'\.(mp4|mov|webm|mkv)(\?|$)', src, re.I):
+        dst = os.path.join(work, os.path.basename(src.split('?')[0]))
+        log(f'Baixando {src}')
+        with requests.get(src, stream=True, timeout=60, allow_redirects=True) as r:
+            r.raise_for_status()
+            with open(dst, 'wb') as f:
+                for b in r.iter_content(4 * 1024 * 1024):
+                    f.write(b)
+        return dst, True
+    outdir = os.path.join(work, 'dl')
+    os.makedirs(outdir, exist_ok=True)
+    cmd = cfg.get('baixador') or EXEMPLO['baixador']
+    cmd = cmd.replace('{url}', shlex.quote(src)).replace('{outdir}', shlex.quote(outdir))
+    log(f'Baixando com: {cmd.split()[0]} ...')
+    r = subprocess.run(cmd, shell=True, stdin=subprocess.DEVNULL)
+    vids = sorted(glob.glob(os.path.join(outdir, '**/*.mp4'), recursive=True), key=os.path.getsize)
+    if r.returncode != 0 or not vids:
+        die('o baixador não entregou nenhum .mp4')
+    return vids[-1], True
+
+
+def duracao(p):
+    try:
+        out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                              '-of', 'csv=p=0', p], capture_output=True, text=True, timeout=60).stdout
+        return float(out.strip())
+    except Exception:
+        return 0.0
+
+
+# ── Codex ───────────────────────────────────────────────────────────────────
+def codex(prompt, cwd, modelo='', bypass=False, timeout=600):
+    out = os.path.join(cwd, '_codex_out.txt')
+    cmd = ['codex', 'exec', '--skip-git-repo-check'] + (['-m', modelo] if modelo else [])
+    cmd += ['--dangerously-bypass-approvals-and-sandbox'] if bypass else ['-s', 'read-only']
+    cmd += ['-o', out, '-']
+    r = subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    txt = open(out, encoding='utf-8').read() if os.path.exists(out) else ''
+    if os.path.exists(out):
+        os.remove(out)
+    if r.returncode != 0 and not txt:
+        raise RuntimeError(f'codex exec falhou: {(r.stderr or r.stdout)[-400:]}')
+    return txt
+
+
+def srt_texto(p, limite=14000):
+    t = open(p, encoding='utf-8', errors='ignore').read()
+    t = re.sub(r'^\d+\s*$|^\d\d:\d\d:\d\d[,.]\d+ --> .*$', '', t, flags=re.M)
+    return re.sub(r'\s+', ' ', t).strip()[:limite]
+
+
+def gerar_metadados(a, c, video, dur, work, modelo):
+    ctx = []
+    if a.contexto:
+        ctx.append(f'Contexto dado pelo autor:\n{a.contexto}')
+    if a.contexto_arquivo:
+        ctx.append('Material de apoio:\n' + open(a.contexto_arquivo, encoding='utf-8', errors='ignore').read()[:14000])
+    if a.legenda:
+        ctx.append('Transcrição (legenda) do vídeo:\n' + srt_texto(a.legenda))
+    if a.title:
+        ctx.append(f'Título já definido (não mude): {a.title}')
+    if a.description:
+        ctx.append(f'Descrição já definida (não mude):\n{a.description}')
+    if not ctx:
+        die('sem --title/--description e sem --contexto/--contexto-arquivo/--legenda: não há do que escrever')
+    idioma = {'pt': 'português do Brasil', 'es': 'espanhol', 'en': 'inglês'}.get(a.idioma, a.idioma)
+    sobre = f'\nSobre o canal: {c["sobre"]}' if c.get('sobre') else ''
+    fim = (f'termina com esta linha exata: "{c["assinatura"]}" e 3 a 5 hashtags' if c.get('assinatura')
+           else 'termina com 3 a 5 hashtags')
+    prompt = f"""Você escreve metadados de vídeo para o YouTube do canal "{c.get('nome', '')}".{sobre}
+Arquivo: {os.path.basename(video)} — duração {int(dur // 60)} min {int(dur % 60)} s. Idioma do vídeo: {idioma}.
+
+{chr(10).join(ctx)}
+
+Responda SOMENTE um JSON válido, sem cercas de código, com estas chaves:
+- "titulo": até 90 caracteres, claro e atraente, sem clickbait mentiroso, em {idioma}
+- "descricao": 600 a 1500 caracteres em {idioma}; abre com 1–2 frases do que a pessoa ganha assistindo, depois um resumo em tópicos curtos, depois os links do contexto (só links que apareceram acima, nunca invente), {fim}
+- "tags": lista de 8 a 15 tags
+- "frase_thumb": 2 a 4 palavras de impacto para a thumb, em {idioma}, sem ponto final
+- "cena_thumb": descrição visual (em português) de uma cena-imagem sobre o assunto, com o sujeito principal no lado DIREITO e espaço escuro vazio à esquerda e embaixo para texto
+Não use os caracteres < e >."""
+    txt = codex(prompt, work, modelo)
+    m = re.search(r'\{.*\}', txt, re.S)
+    if not m:
+        die(f'Codex não devolveu JSON: {txt[:300]}')
+    return json.loads(m.group(0))
+
+
+# ── thumb ───────────────────────────────────────────────────────────────────
+def arte_codex(cena, work, modelo):
+    d = tempfile.mkdtemp(prefix='arte-', dir=work)
+    prompt = (f'Use sua ferramenta de geração de imagem (image_gen) para criar UMA imagem horizontal '
+              f'(paisagem, 16:9) e salve o PNG como arte.png neste diretório. Não crie nem edite nenhum outro arquivo.\n\n'
+              f'Conteúdo da imagem: thumbnail de YouTube. {cena}\n'
+              f'Visual premium e cinematográfico, fundo escuro, luz de recorte âmbar e ciano, sujeito nítido.\n'
+              f'SEM TEXTO de qualquer tipo: sem palavras, sem letras, sem legendas, sem marca d\'água, '
+              f'sem logo, sem interface de usuário, não é uma captura de tela.\n'
+              f'Ao terminar, responda só com o caminho do arquivo e o tamanho em pixels.')
+    codex(prompt, d, modelo, bypass=True)
+    png = os.path.join(d, 'arte.png')
+    if not os.path.exists(png) or os.path.getsize(png) == 0:
+        raise RuntimeError('codex não gerou arte.png')
+    return png
+
+
+def arte_reserva(cena, cfg):
+    """Servidor de imagem local opcional: POST {model, prompt, width, height} → {"image": base64}."""
+    import requests
+    rs = cfg.get('imagem_reserva') or {}
+    if not rs.get('url'):
+        raise RuntimeError('imagem_reserva não configurada')
+    r = requests.post(rs['url'], json={'model': rs.get('modelo', ''), 'prompt': cena + ', no text',
+                                       'width': 1024, 'height': 576}, timeout=1800)
+    r.raise_for_status()
+    return io.BytesIO(base64.b64decode(r.json()['image']))
+
+
+def _fonte(path, size):
+    from PIL import ImageFont
+    for p in [path, '~/.local/share/fonts/Montserrat-ExtraBold.ttf',
+              '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+              '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+              '/Library/Fonts/Arial Bold.ttf', 'C:/Windows/Fonts/arialbd.ttf']:
+        if p and os.path.exists(os.path.expanduser(p)):
+            return ImageFont.truetype(os.path.expanduser(p), size)
+    return ImageFont.load_default(size)
+
+
+def _quebra(texto, font, largura, draw):
+    linhas, atual = [], ''
+    for w in texto.split():
+        t = f'{atual} {w}'.strip()
+        if draw.textlength(t, font=font) <= largura or not atual:
+            atual = t
+        else:
+            linhas.append(atual)
+            atual = w
+    return linhas + ([atual] if atual else [])
+
+
+def compor_thumb(arte, frase, tcfg, out):
+    """Arte 16:9 + escurecimento à esquerda/embaixo + frase grande + marca + barra de destaque."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageOps
+    bg = ImageOps.fit(Image.open(arte).convert('RGB'), (W, H), Image.LANCZOS).convert('RGBA')
+    grad = Image.new('L', (W, H), 0)
+    gp = grad.load()
+    for x in range(W):
+        for y in range(0, H, 1):
+            gx = max(0.0, 1 - x / (W * 0.62))
+            gy = max(0.0, (y - H * 0.45) / (H * 0.55))
+            gp[x, y] = int(255 * min(0.85, 0.75 * gx + 0.7 * gy))
+    bg = Image.composite(Image.new('RGBA', (W, H), (5, 6, 10, 255)), bg, grad)
+    d = ImageDraw.Draw(bg)
+    cor_txt, cor_marca, cor_dest = (tcfg.get('cor_texto', '#ffffff'), tcfg.get('cor_marca', '#f0e805'),
+                                    tcfg.get('cor_destaque', '#f91f06'))
+    frase = frase.upper()
+    size = 92
+    while True:
+        f = _fonte(tcfg.get('fonte'), size)
+        linhas = _quebra(frase, f, W * 0.72, d)
+        if len(linhas) <= 3 or size <= 56:
+            break
+        size -= 6
+    lh = int(size * 1.02)
+    y0 = H - 70 - lh * len(linhas)
+    sombra = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    ds = ImageDraw.Draw(sombra)
+    for i, ln in enumerate(linhas):
+        ds.text((64, y0 + i * lh + 6), ln, font=f, fill=(0, 0, 0, 230))
+    bg = Image.alpha_composite(bg, sombra.filter(ImageFilter.GaussianBlur(14)))
+    d = ImageDraw.Draw(bg)
+    for i, ln in enumerate(linhas):
+        d.text((64, y0 + i * lh), ln, font=f, fill=cor_txt, stroke_width=6, stroke_fill='#000000')
+    d.rounded_rectangle((64, H - 50, 64 + 250, H - 40), radius=4, fill=cor_dest)
+    if tcfg.get('marca'):
+        fm = _fonte(tcfg.get('fonte'), 46)
+        tw = d.textlength(tcfg['marca'], font=fm)
+        d.rounded_rectangle((30, 24, 30 + tw + 34, 24 + 70), radius=10, fill=(0, 0, 0, 200))
+        d.text((47, 33), tcfg['marca'], font=fm, fill=cor_marca)
+    img = bg.convert('RGB')
+    q = 92
+    img.save(out, 'JPEG', quality=q)
+    while os.path.getsize(out) > THUMB_MAX and q > 50:
+        q -= 10
+        img.save(out, 'JPEG', quality=q)
+    return out
+
+
+def gerar_thumb(c, cfg, frase, cena, work, arte=None):
+    modelo = cfg.get('codex_modelo', '')
+    if arte:
+        log(f'Thumb: arte fornecida ({arte})')
+        fonte = arte
+    else:
+        try:
+            log('Thumb: gerando arte no Codex image_gen...')
+            fonte = arte_codex(cena, work, modelo)
+            log('Thumb: arte = Codex image_gen')
+        except Exception as e:
+            log(f'Thumb: Codex falhou ({e}); tentando a reserva')
+            fonte = arte_reserva(cena, cfg)
+            log('Thumb: arte = imagem_reserva')
+    from PIL import Image
+    Image.open(fonte).convert('RGB').save(os.path.join(work, 'thumb_arte.png'))
+    return compor_thumb(os.path.join(work, 'thumb_arte.png'), frase, c.get('thumb', {}),
+                        os.path.join(work, 'thumb.jpg'))
+
+
+# ── YouTube ─────────────────────────────────────────────────────────────────
+def limpa(s, n):
+    return (s or '').replace('<', '').replace('>', '').strip()[:n]
+
+
+def upload_video(token, video, meta):
+    import requests
+    size = os.path.getsize(video)
+    r = requests.post('https://www.googleapis.com/upload/youtube/v3/videos'
+                      '?uploadType=resumable&part=snippet,status',
+                      headers={'Authorization': f'Bearer {token}',
+                               'Content-Type': 'application/json; charset=UTF-8',
+                               'X-Upload-Content-Length': str(size),
+                               'X-Upload-Content-Type': 'video/*'},
+                      data=json.dumps(meta).encode(), timeout=60)
+    if r.status_code != 200 or 'Location' not in r.headers:
+        die(f'upload não iniciou ({r.status_code}): {r.text[:400]}')
+    url = r.headers['Location']
+    pos, falhas, err = 0, 0, ''
+    with open(video, 'rb') as f:
+        while pos < size:
+            f.seek(pos)
+            chunk = f.read(CHUNK)
+            end = pos + len(chunk) - 1
+            try:
+                r = requests.put(url, data=chunk, timeout=300, headers={
+                    'Authorization': f'Bearer {token}',
+                    'Content-Length': str(len(chunk)),
+                    'Content-Range': f'bytes {pos}-{end}/{size}'})
+            except requests.RequestException as e:
+                r, err = None, str(e)
+            if r is not None and r.status_code in (200, 201):
+                print('\r  enviado 100%      ', flush=True)
+                return r.json()['id']
+            if r is not None and r.status_code == 308:
+                rng = r.headers.get('Range')
+                pos = int(rng.split('-')[1]) + 1 if rng else 0
+                falhas = 0
+                print(f'\r  enviado {pos * 100 // size}%   ', end='', flush=True)
+                continue
+            falhas += 1
+            if falhas > 6 or (r is not None and r.status_code < 500 and r.status_code != 429):
+                die(f'upload falhou: {r.status_code if r is not None else err} {r.text[:300] if r is not None else ""}')
+            time.sleep(min(60, 2 ** falhas))
+            q = requests.put(url, timeout=60, headers={'Authorization': f'Bearer {token}',
+                                                       'Content-Range': f'bytes */{size}'})
+            if q.status_code in (200, 201):
+                return q.json()['id']
+            rng = q.headers.get('Range')
+            pos = int(rng.split('-')[1]) + 1 if q.status_code == 308 and rng else pos
+    die('upload terminou sem resposta final')
+
+
+def set_thumb(token, vid, thumb):
+    import requests
+    r = requests.post(f'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={vid}&uploadType=media',
+                      headers={'Authorization': f'Bearer {token}', 'Content-Type': 'image/jpeg'},
+                      data=open(thumb, 'rb').read(), timeout=120)
+    if r.status_code == 403 and 'forbidden' in r.text.lower():
+        return False, 'canal sem permissão de thumb personalizada (verifique o telefone em youtube.com/verify)'
+    return r.status_code == 200, r.text[:300]
+
+
+def set_legenda(token, vid, srt, idioma):
+    import requests
+    meta = json.dumps({'snippet': {'videoId': vid, 'language': idioma, 'name': '', 'isDraft': False}})
+    bnd = 'ytpubx' + os.urandom(8).hex()
+    body = (f'--{bnd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n'
+            f'--{bnd}\r\nContent-Type: application/octet-stream\r\n\r\n').encode() + \
+        open(srt, 'rb').read() + f'\r\n--{bnd}--\r\n'.encode()
+    r = requests.post('https://www.googleapis.com/upload/youtube/v3/captions?uploadType=multipart&part=snippet',
+                      headers={'Authorization': f'Bearer {token}',
+                               'Content-Type': f'multipart/related; boundary={bnd}'},
+                      data=body, timeout=120)
+    if r.status_code == 403 and 'insufficient' in r.text.lower():
+        return False, 'a autorização deste canal não tem o escopo youtube.force-ssl: rode "yt-pubx auth" de novo'
+    return r.status_code == 200, r.text[:300]
+
+
+# ── publicar ────────────────────────────────────────────────────────────────
+def cmd_publicar(a):
+    cfg = load_config()
+    if a.plano:  # reaproveita texto (e arte) de um --dry-run já conferido
+        pl = json.load(open(a.plano, encoding='utf-8'))
+        sn = pl['youtube']['snippet']
+        a.canal = a.canal or pl.get('canal')
+        a.title = a.title or sn['title']
+        a.description = a.description or sn['description']
+        a.tags = a.tags or ','.join(sn.get('tags', []))
+        a.frase_thumb = a.frase_thumb or pl.get('frase_thumb')
+        a.cena_thumb = a.cena_thumb or pl.get('cena_thumb')
+        arte = os.path.join(os.path.dirname(os.path.abspath(a.plano)), 'thumb_arte.png')
+        if not a.thumb and not a.thumb_arte and os.path.exists(arte):
+            a.thumb_arte = arte
+    nome, c = canal(cfg, a.canal)
+    a.idioma = a.idioma or c.get('idioma', 'pt')
+    privacy = a.privacy or c.get('privacy', 'public')
+    log(f'v{VERSION} · canal {nome} = {c.get("nome", "")} {c.get("url", "")}')
+
+    slug = re.sub(r'[^a-z0-9]+', '-', os.path.basename(a.video).lower().split('?')[0])[:40].strip('-')
+    work = os.path.join(TRABALHOS, f'{datetime.now():%Y%m%d-%H%M%S}-{slug}')
+    os.makedirs(work, exist_ok=True)
+
+    if a.legenda and re.match(r'https?://', a.legenda):
+        import requests
+        p = os.path.join(work, os.path.basename(a.legenda.split('?')[0]))
+        open(p, 'wb').write(requests.get(a.legenda, timeout=60).content)
+        a.legenda = p
+
+    video, baixado = obter_video(a.video, work, cfg)
+    dur = duracao(video)
+    log(f'Vídeo: {video} ({os.path.getsize(video) / 1e6:.0f} MB, {dur / 60:.1f} min)')
+
+    gerado = {}
+    falta_texto = not (a.title and a.description)
+    falta_thumb = not a.thumb and not (a.frase_thumb and a.cena_thumb)
+    if falta_texto or falta_thumb:
+        log('Codex escrevendo título/descrição/thumb...')
+        gerado = gerar_metadados(a, c, video, dur, work, cfg.get('codex_modelo', ''))
+    titulo = limpa(a.title or gerado.get('titulo'), 100)
+    descricao = limpa(a.description or gerado.get('descricao'), 5000)
+    tags = [t.strip() for t in (a.tags.split(',') if a.tags else gerado.get('tags', [])) if t.strip()]
+    while len(','.join(tags)) > 480:
+        tags.pop()
+    frase = a.frase_thumb or gerado.get('frase_thumb') or titulo[:40]
+    cena = a.cena_thumb or gerado.get('cena_thumb') or titulo
+    if not titulo or not descricao:
+        die('faltou título ou descrição')
+
+    thumb = a.thumb or gerar_thumb(c, cfg, frase, cena, work, arte=a.thumb_arte)
+
+    status = {'privacyStatus': privacy, 'selfDeclaredMadeForKids': False}
+    if a.agendar:
+        dt = datetime.strptime(a.agendar, '%Y-%m-%d %H:%M').astimezone()
+        status = {'privacyStatus': 'private', 'publishAt': dt.isoformat(), 'selfDeclaredMadeForKids': False}
+    meta = {'snippet': {'title': titulo, 'description': descricao, 'tags': tags,
+                        'categoryId': a.categoria or c.get('categoria', '27'),
+                        'defaultLanguage': a.idioma, 'defaultAudioLanguage': a.idioma},
+            'status': status}
+    plano = {'canal': nome, 'canal_nome': c.get('nome', ''), 'video': video, 'thumb': thumb,
+             'frase_thumb': frase, 'cena_thumb': cena, 'youtube': meta}
+    json.dump(plano, open(os.path.join(work, 'plano.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    print(f'\nTÍTULO: {titulo}\nTAGS: {", ".join(tags)}\nPRIVACIDADE: {status}\nTHUMB: {thumb}\n'
+          f'DESCRIÇÃO:\n{descricao}\n\nPLANO: {os.path.join(work, "plano.json")}\n', flush=True)
+
+    if a.dry_run:
+        log('--dry-run: nada foi enviado.')
+        return
+
+    log('Enviando vídeo...')
+    vid = upload_video(access_token(nome, c), video, meta)
+    url = f'https://www.youtube.com/watch?v={vid}'
+    log(f'Publicado: {url}')
+    ok, msg = set_thumb(access_token(nome, c), vid, thumb)
+    log('Thumb aplicada' if ok else f'AVISO: thumb não aplicada: {msg}')
+    leg_ok = None
+    if a.legenda and not a.sem_legenda:
+        leg_ok, msg = set_legenda(access_token(nome, c), vid, a.legenda, a.idioma)
+        log('Legenda enviada' if leg_ok else f'AVISO: legenda não enviada: {msg}')
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(HISTORICO, 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'data': datetime.now().isoformat(timespec='seconds'), 'canal': nome,
+                            'video_id': vid, 'url': url, 'titulo': titulo, 'privacy': status,
+                            'thumb_ok': ok, 'legenda_ok': leg_ok, 'origem': a.video,
+                            'trabalho': work}, ensure_ascii=False) + '\n')
+    if baixado and not a.manter:
+        os.remove(video)
+        log('Cópia baixada do vídeo apagada (use --manter para guardar)')
+    print(f'\nURL: {url}\nSTUDIO: https://studio.youtube.com/video/{vid}/edit')
+
+
+def main():
+    p = argparse.ArgumentParser(prog='yt-pubx', description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--version', action='version', version=VERSION)
+    sub = p.add_subparsers(dest='cmd', required=True)
+    sub.add_parser('init', help='cria o config.json de exemplo').set_defaults(fn=cmd_init)
+    sub.add_parser('canais', help='lista os canais configurados').set_defaults(fn=cmd_canais)
+    au = sub.add_parser('auth', help='autoriza um canal (OAuth)')
+    au.add_argument('canal')
+    au.add_argument('--client-secret', required=True, help='JSON do cliente OAuth "App para computador"')
+    au.add_argument('--porta', type=int, default=0, help='porta local do retorno (0 = livre)')
+    au.set_defaults(fn=cmd_auth)
+    q = sub.add_parser('publicar', help='publica um vídeo')
+    q.add_argument('video', help='arquivo local ou URL (mp4 direto, YouTube, etc.)')
+    q.add_argument('--canal', help='nome do canal no config (padrão: canal_padrao)')
+    q.add_argument('--plano', help='plano.json de um --dry-run: reusa título, descrição, tags e arte')
+    q.add_argument('--title')
+    q.add_argument('--description')
+    q.add_argument('--tags', help='separadas por vírgula')
+    q.add_argument('--contexto', help='texto livre sobre o vídeo (links, público, assunto)')
+    q.add_argument('--contexto-arquivo', help='arquivo de apoio (README, roteiro...)')
+    q.add_argument('--legenda', help='SRT (arquivo ou URL): vira contexto e é enviado como legenda')
+    q.add_argument('--sem-legenda', action='store_true', help='usa o SRT só como contexto, não envia')
+    q.add_argument('--frase-thumb', help='texto da thumb (2–4 palavras)')
+    q.add_argument('--cena-thumb', help='cena da arte da thumb')
+    q.add_argument('--thumb', help='thumb pronta (jpg): pula a geração')
+    q.add_argument('--thumb-arte', help='arte pronta: só aplica frase, marca e cores do canal')
+    q.add_argument('--privacy', choices=['public', 'unlisted', 'private'])
+    q.add_argument('--agendar', help='"AAAA-MM-DD HH:MM" (hora local): sobe privado e publica nesse horário')
+    q.add_argument('--idioma')
+    q.add_argument('--categoria', help='id da categoria (27 = Educação)')
+    q.add_argument('--dry-run', action='store_true', help='gera tudo e para antes de enviar')
+    q.add_argument('--manter', action='store_true', help='não apaga o vídeo baixado de URL')
+    q.set_defaults(fn=cmd_publicar)
+    a = p.parse_args()
+    a.fn(a)
+
+
+if __name__ == '__main__':
+    main()
