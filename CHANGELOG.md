@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.0 — 2026-10-08
+- `--sem-thumb`: não gera nem envia thumb. Liga sozinho em vídeo vertical (Short), que não usa thumb.
+- Corrige erro depois do envio quando não havia thumb (`ok` indefinido ao gravar o histórico).
+
 ## 2.1.0 — 2026-10-07
 - `yt-pubx atualizar <id|URL>`: edita título, descrição ou tags de um vídeo já publicado.
 

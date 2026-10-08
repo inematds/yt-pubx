@@ -156,6 +156,7 @@ yt-pubx publicar video.mp4 --title "..." --description "..." --tags "a,b,c" --th
 | `--title`, `--description`, `--tags` | fija lo que ya tienes; Codex completa el resto |
 | `--frase-thumb`, `--cena-thumb` | texto de la miniatura (2–4 palabras) y la escena del arte |
 | `--thumb capa.jpg` / `--thumb-arte arte.png` | miniatura lista / arte listo (solo aplica frase y marca) |
+| `--sem-thumb` | no genera ni envía miniatura (automático en video vertical/Short) |
 | `--privacy public\|unlisted\|private`, `--agendar "AAAA-MM-DD HH:MM"` | visibilidad; programar sube el video como privado y YouTube lo publica a la hora indicada |
 | `--canal`, `--idioma`, `--categoria` | sobrescriben el config |
 | `--sem-legenda` | usa el SRT solo como contexto |

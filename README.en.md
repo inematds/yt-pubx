@@ -156,6 +156,7 @@ yt-pubx publicar video.mp4 --title "..." --description "..." --tags "a,b,c" --th
 | `--title`, `--description`, `--tags` | pins what you already have; Codex fills in the rest |
 | `--frase-thumb`, `--cena-thumb` | thumbnail text (2–4 words) and the art scene |
 | `--thumb capa.jpg` / `--thumb-arte arte.png` | ready-made thumbnail / ready-made art (only applies phrase and brand) |
+| `--sem-thumb` | do not generate or send a thumbnail (automatic for vertical videos/Shorts) |
 | `--privacy public\|unlisted\|private`, `--agendar "AAAA-MM-DD HH:MM"` | visibility; scheduling uploads as private and YouTube publishes at the set time |
 | `--canal`, `--idioma`, `--categoria` | override the config |
 | `--sem-legenda` | uses the SRT only as context |

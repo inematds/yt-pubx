@@ -156,6 +156,7 @@ yt-pubx publicar video.mp4 --title "..." --description "..." --tags "a,b,c" --th
 | `--title`, `--description`, `--tags` | fixa o que você já tem; o Codex completa o resto |
 | `--frase-thumb`, `--cena-thumb` | texto da thumb (2–4 palavras) e a cena da arte |
 | `--thumb capa.jpg` / `--thumb-arte arte.png` | thumb pronta / arte pronta (só aplica frase e marca) |
+| `--sem-thumb` | não gera nem envia thumb (automático em vídeo vertical/Short) |
 | `--privacy public\|unlisted\|private`, `--agendar "AAAA-MM-DD HH:MM"` | visibilidade; agendar sobe privado e o YouTube publica no horário |
 | `--canal`, `--idioma`, `--categoria` | sobrepõem o config |
 | `--sem-legenda` | usa o SRT só como contexto |

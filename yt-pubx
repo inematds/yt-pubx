@@ -15,7 +15,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime
 
-VERSION = '2.1.0'
+VERSION = '2.2.0'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -213,6 +213,17 @@ def obter_video(src, work, cfg):
     if r.returncode != 0 or not vids:
         die('o baixador não entregou nenhum .mp4')
     return vids[-1], True
+
+
+def vertical(p):
+    """Vídeo em pé (Short): altura maior que a largura."""
+    try:
+        out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+                              'stream=width,height', '-of', 'csv=p=0', p], capture_output=True, text=True, timeout=60).stdout
+        w, h = (int(x) for x in out.strip().split(',')[:2])
+        return h > w
+    except Exception:
+        return False
 
 
 def duracao(p):
@@ -516,8 +527,11 @@ def cmd_publicar(a):
     log(f'Vídeo: {video} ({os.path.getsize(video) / 1e6:.0f} MB, {dur / 60:.1f} min)')
 
     gerado = {}
+    if not a.sem_thumb and vertical(video):
+        a.sem_thumb = True
+        log('Vídeo vertical (Short): sem thumb')
     falta_texto = not (a.title and a.description)
-    falta_thumb = not a.thumb and not (a.frase_thumb and a.cena_thumb)
+    falta_thumb = not a.sem_thumb and not a.thumb and not (a.frase_thumb and a.cena_thumb)
     if falta_texto or falta_thumb:
         log('Codex escrevendo título/descrição/thumb...')
         gerado = gerar_metadados(a, c, video, dur, work, cfg.get('codex_modelo', ''))
@@ -531,7 +545,7 @@ def cmd_publicar(a):
     if not titulo or not descricao:
         die('faltou título ou descrição')
 
-    thumb = a.thumb or gerar_thumb(c, cfg, frase, cena, work, arte=a.thumb_arte)
+    thumb = None if a.sem_thumb else (a.thumb or gerar_thumb(c, cfg, frase, cena, work, arte=a.thumb_arte))
 
     status = {'privacyStatus': privacy, 'selfDeclaredMadeForKids': False}
     if a.agendar:
@@ -555,8 +569,10 @@ def cmd_publicar(a):
     vid = upload_video(access_token(nome, c), video, meta)
     url = f'https://www.youtube.com/watch?v={vid}'
     log(f'Publicado: {url}')
-    ok, msg = set_thumb(access_token(nome, c), vid, thumb)
-    log('Thumb aplicada' if ok else f'AVISO: thumb não aplicada: {msg}')
+    ok = None
+    if thumb:
+        ok, msg = set_thumb(access_token(nome, c), vid, thumb)
+        log('Thumb aplicada' if ok else f'AVISO: thumb não aplicada: {msg}')
     leg_ok = None
     if a.legenda and not a.sem_legenda:
         leg_ok, msg = set_legenda(access_token(nome, c), vid, a.legenda, a.idioma)
@@ -632,6 +648,7 @@ def main():
     q.add_argument('--frase-thumb', help='texto da thumb (2–4 palavras)')
     q.add_argument('--cena-thumb', help='cena da arte da thumb')
     q.add_argument('--thumb', help='thumb pronta (jpg): pula a geração')
+    q.add_argument('--sem-thumb', action='store_true', help='não gera nem envia thumb (automático em vídeo vertical/Short)')
     q.add_argument('--thumb-arte', help='arte pronta: só aplica frase, marca e cores do canal')
     q.add_argument('--privacy', choices=['public', 'unlisted', 'private'])
     q.add_argument('--agendar', help='"AAAA-MM-DD HH:MM" (hora local): sobe privado e publica nesse horário')
