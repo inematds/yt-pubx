@@ -23,3 +23,4 @@ Regras:
 When I correct you, or you catch yourself making a mistake: before continuing, add the lesson as a one-line rule under ## Lessons, so it never happens again.
 
 ## Lessons
+- `yt-pubx auth`: nunca reiniciar o comando depois de mandar o link à pessoa — cada execução tem state e PKCE próprios e o código do link antigo não serve. Em 10/10 (canal Aventuras) reiniciei para testar um atalho e a autorização da pessoa se perdeu. (10/10/2026)

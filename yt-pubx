@@ -15,7 +15,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime
 
-VERSION = '2.2.0'
+VERSION = '2.3.0'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -126,23 +126,39 @@ def access_token(nome, c):
 
 
 def cmd_auth(a):
-    """OAuth 'app para computador' com retorno em localhost (porta livre)."""
+    """OAuth com retorno local. Aceita client "App para computador" ou "Aplicativo da Web"
+    (usa o redirect cadastrado nele) e, se o navegador estiver em outra máquina, a URL final colada no terminal."""
     import requests
     cfg = load_config()
     nome, c = canal(cfg, a.canal)
     sec = json.load(open(os.path.expanduser(a.client_secret)))
+    tipo = 'web' if 'web' in sec else 'installed'
     sec = sec.get('installed') or sec.get('web') or sec
     cid, csec = sec['client_id'], sec['client_secret']
+    redirect = a.redirect
+    if not redirect and tipo == 'web':  # client Web só aceita o endereço exato cadastrado no console
+        locais = [u for u in sec.get('redirect_uris', []) if re.match(r'http://(localhost|127\.0\.0\.1)(:\d+)?(/|$)', u)]
+        if not locais:
+            die('client "Aplicativo da Web" sem endereço local cadastrado: no Google Cloud, em Credenciais → '
+                'seu client → URIs de redirecionamento autorizados, adicione http://localhost:8737/callback '
+                'e rode de novo com --redirect http://localhost:8737/callback (ou crie um client "App para computador")')
+        redirect = locais[0]
+    porta = a.porta
+    if redirect:
+        u = urllib.parse.urlparse(redirect)
+        porta = u.port or 80
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
     state = secrets.token_urlsafe(16)
     got = {}
 
+    def receber(q):
+        if q.get('state', [''])[0] == state:
+            got.update({k: v[0] for k, v in q.items()})
+
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            if q.get('state', [''])[0] == state:
-                got.update({k: v[0] for k, v in q.items()})
+            receber(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query))
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
@@ -151,19 +167,35 @@ def cmd_auth(a):
         def log_message(self, *_):
             pass
 
-    srv = http.server.HTTPServer(('127.0.0.1', a.porta), H)
-    redirect = f'http://127.0.0.1:{srv.server_port}'
+    srv = http.server.HTTPServer(('127.0.0.1', porta), H)
+    redirect = redirect or f'http://127.0.0.1:{srv.server_port}'
     url = 'https://accounts.google.com/o/oauth2/v2/auth?' + urllib.parse.urlencode({
         'client_id': cid, 'redirect_uri': redirect, 'response_type': 'code', 'scope': ' '.join(SCOPES),
         'access_type': 'offline', 'prompt': 'consent', 'state': state,
         'code_challenge': challenge, 'code_challenge_method': 'S256'})
-    print(f'\nAbra no navegador, logado na conta Google DONA do canal "{c.get("nome", nome)}":\n\n{url}\n', flush=True)
+    link = os.path.join(CONFIG_DIR, f'auth-{nome}.txt')
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    open(link, 'w').write(url + '\n')
+    print(f'\nAbra no navegador, logado na conta Google DONA do canal "{c.get("nome", nome)}":\n\n{url}\n\n'
+          f'(o mesmo link está em {link}: copie de lá se o terminal quebrar a linha;\n'
+          f' não feche este comando, ele espera até 30 min)\n\n'
+          f'Se, depois de "Permitir", o navegador mostrar erro de conexão (navegador em outra máquina),\n'
+          f'copie a URL inteira da barra de endereço, cole aqui e tecle Enter.\n', flush=True)
     try:
         webbrowser.open(url)
     except Exception:
         pass
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    fim = time.time() + 600
+
+    def ler_terminal():
+        for linha in sys.stdin:
+            if 'code=' in linha:
+                receber(urllib.parse.parse_qs(urllib.parse.urlparse(linha.strip()).query))
+                if 'code' not in got:
+                    print('Essa URL é de outro link (state diferente): use o link mostrado acima.', flush=True)
+    if sys.stdin and sys.stdin.isatty():
+        threading.Thread(target=ler_terminal, daemon=True).start()
+    fim = time.time() + 1800
     while 'code' not in got and 'error' not in got and time.time() < fim:
         time.sleep(0.5)
     srv.shutdown()
@@ -179,6 +211,8 @@ def cmd_auth(a):
     with open(token_path(nome), 'w') as f:
         json.dump({'client_id': cid, 'client_secret': csec, 'refresh_token': tok['refresh_token']}, f)
     os.chmod(token_path(nome), 0o600)
+    if os.path.exists(link):
+        os.remove(link)
     ch = requests.get('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true',
                       headers={'Authorization': f'Bearer {tok["access_token"]}'}, timeout=30).json()
     titulos = [i['snippet']['title'] for i in ch.get('items', [])]
@@ -631,8 +665,9 @@ def main():
     sub.add_parser('canais', help='lista os canais configurados').set_defaults(fn=cmd_canais)
     au = sub.add_parser('auth', help='autoriza um canal (OAuth)')
     au.add_argument('canal')
-    au.add_argument('--client-secret', required=True, help='JSON do cliente OAuth "App para computador"')
+    au.add_argument('--client-secret', required=True, help='JSON do cliente OAuth (App para computador ou Web)')
     au.add_argument('--porta', type=int, default=0, help='porta local do retorno (0 = livre)')
+    au.add_argument('--redirect', help='endereço de retorno exato cadastrado no client Web (ex.: http://localhost:8737/callback)')
     au.set_defaults(fn=cmd_auth)
     q = sub.add_parser('publicar', help='publica um vídeo')
     q.add_argument('video', help='arquivo local ou URL (mp4 direto, YouTube, etc.)')

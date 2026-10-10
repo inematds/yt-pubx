@@ -225,6 +225,7 @@
     <p>Abre el navegador; entra con la cuenta dueña del canal y acepta. El token queda en <code>~/.config/yt-pubx/tokens/</code> con permiso 600. Para otro canal, crea otro bloque y repite con su nombre.</p>
 <pre><span class="k">yt-pubx auth</span> principal --client-secret ~/.config/yt-pubx/client_secret_XXXX.json
 <span class="k">yt-pubx canais</span>   <span class="c"># * principal  Mi Canal  ...  ok</span></pre>
+<p><strong>¿Error en la autorización?</strong> <code>redirect_uri_mismatch</code>, enlace cortado, navegador en otra máquina: el <a href="https://github.com/inematds/yt-pubx/blob/main/docs/autorizar-canal.es.md">paso a paso sin términos técnicos</a> muestra cada error de Google y la salida. Si la página final da error de conexión, copia la URL de la barra y pégala en la terminal del <code>auth</code>.</p>
   </div></div>
 
   <div class="step"><div class="b">5</div><div>
@@ -278,6 +279,7 @@ revisa título y descripción y publica con --plano &lt;carpeta&gt;/plano.json.<
   <span class="chip">Roadmap</span>
   <h2>Dónde está y hacia dónde va</h2>
   <p class="sub">Lo que ya funciona hoy y lo que puede venir.</p>
+  <div class="phase"><div class="tag">2.3</div><div class="d"><strong>Autorización sin sustos</strong><span>Acepta cliente web, URL pegada en la terminal cuando el navegador está en otra máquina, enlace guardado en archivo y guía sencilla de los errores de Google.</span></div></div>
   <div class="phase"><div class="tag">2.0</div><div class="d"><strong>Herramienta independiente</strong><span>Config propia, canales ilimitados, OAuth con <code>yt-pubx auth</code>, compositor de miniaturas, <code>--dry-run</code> y <code>--plano</code>, programación, subtítulos SRT.</span></div></div>
   <div class="phase"><div class="tag">Próximo</div><div class="d"><strong>Listas de reproducción y capítulos</strong><span>Agregar el video a una lista de reproducción y armar capítulos a partir de los subtítulos.</span></div></div>
   <div class="phase"><div class="tag">Después</div><div class="d"><strong>Lote</strong><span>Publicar una carpeta entera con un único dry-run para revisar todas las miniaturas lado a lado.</span></div></div>

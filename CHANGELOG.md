@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.0 — 2026-10-10
+- `yt-pubx auth` aceita client **Aplicativo da Web**: usa o endereço local cadastrado no JSON, ou `--redirect`.
+- Navegador em outra máquina: cole no terminal a URL final (com `code=`) e a autorização termina.
+- O link de autorização fica também em `~/.config/yt-pubx/auth-<canal>.txt` (copiar sem quebra de linha); espera 30 min.
+- Novo guia leigo [docs/autorizar-canal.md](docs/autorizar-canal.md) com os erros reais do Google e a saída de cada um.
+
 ## 2.2.0 — 2026-10-08
 - `--sem-thumb`: não gera nem envia thumb. Liga sozinho em vídeo vertical (Short), que não usa thumb.
 - Corrige erro depois do envio quando não havia thumb (`ok` indefinido ao gravar o histórico).

@@ -225,6 +225,7 @@
     <p>Abre o navegador; entre com a conta dona do canal e aceite. O token fica em <code>~/.config/yt-pubx/tokens/</code> com permissão 600. Para outro canal, crie outro bloco e repita com o nome dele.</p>
 <pre><span class="k">yt-pubx auth</span> principal --client-secret ~/.config/yt-pubx/client_secret_XXXX.json
 <span class="k">yt-pubx canais</span>   <span class="c"># * principal  Meu Canal  ...  ok</span></pre>
+<p><strong>Deu erro na autorização?</strong> <code>redirect_uri_mismatch</code>, link quebrado, navegador em outra máquina: o <a href="https://github.com/inematds/yt-pubx/blob/main/docs/autorizar-canal.md">passo a passo sem termos técnicos</a> mostra cada erro do Google e a saída. Se a página final der erro de conexão, copie a URL da barra e cole no terminal do <code>auth</code>.</p>
   </div></div>
 
   <div class="step"><div class="b">5</div><div>
@@ -278,6 +279,7 @@ confira título e descrição e publique com --plano &lt;pasta&gt;/plano.json.</
   <span class="chip">Roadmap</span>
   <h2>Onde está e para onde vai</h2>
   <p class="sub">O que já funciona hoje e o que pode vir.</p>
+  <div class="phase"><div class="tag">2.3</div><div class="d"><strong>Autorização sem susto</strong><span>Aceita client Web, URL colada no terminal quando o navegador está em outra máquina, link salvo em arquivo e guia leigo dos erros do Google.</span></div></div>
   <div class="phase"><div class="tag">2.0</div><div class="d"><strong>Ferramenta independente</strong><span>Config própria, canais ilimitados, OAuth com <code>yt-pubx auth</code>, compositor de thumb, <code>--dry-run</code> e <code>--plano</code>, agendamento, legenda SRT.</span></div></div>
   <div class="phase"><div class="tag">Próximo</div><div class="d"><strong>Playlists e capítulos</strong><span>Adicionar o vídeo a uma playlist e montar capítulos a partir da legenda.</span></div></div>
   <div class="phase"><div class="tag">Depois</div><div class="d"><strong>Lote</strong><span>Publicar uma pasta inteira com um dry-run único para revisar todas as thumbs lado a lado.</span></div></div>

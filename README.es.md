@@ -58,8 +58,12 @@ yt-pubx init                                 # crea ~/.config/yt-pubx/config.jso
    - Tipo de usuario **Externo**; nombre de la app y tu correo.
    - En **Público / Usuarios de prueba**, agrega el correo de la cuenta de Google dueña del canal.
 4. **APIs y servicios → Credenciales → Crear credenciales → ID de cliente de OAuth**:
-   - Tipo de aplicación: **App de escritorio** (Desktop).
+   - Tipo de aplicación: **App de escritorio** (Desktop). Un cliente **Aplicación web** existente también sirve:
+     registra en él una dirección `http://localhost:<puerto>/...` en *URI de redireccionamiento autorizados* (ver la guía abajo).
    - Descarga el JSON (`client_secret_....json`). Guárdalo fuera de cualquier repositorio.
+
+> **¿Primera vez?** Lee [docs/autorizar-canal.es.md](docs/autorizar-canal.es.md): el paso a paso sin
+> términos técnicos, con cada error que muestra Google y qué hacer.
 
 > **Trampas de Google que conviene conocer antes:**
 > - **App en modo "Prueba"**: el acceso expira en **7 días** y tienes que volver a ejecutar `yt-pubx auth`.
@@ -121,6 +125,10 @@ Después autoriza (abre el navegador; entra con la cuenta dueña del canal):
 yt-pubx auth principal --client-secret ~/Downloads/client_secret_XXXX.json
 yt-pubx canais
 ```
+
+¿Navegador en otra máquina (servidor, escritorio remoto)? Después de **Permitir** la página da error de conexión:
+copia la URL de la barra de direcciones, pégala en la terminal del `yt-pubx auth` y presiona Enter.
+El enlace de autorización también queda en `~/.config/yt-pubx/auth-<canal>.txt`, para copiarlo sin cortes.
 
 El token queda en `~/.config/yt-pubx/tokens/principal.json` (permiso 600). Para más canales,
 repite: un bloque en `canais` + un `yt-pubx auth <nombre>`. El mismo `client_secret` sirve para
@@ -190,6 +198,9 @@ un cambio de frase en la miniatura y tres publicaciones con miniatura en menos d
 
 | Mensaje | Causa / solución |
 |---|---|
+| `redirect_uri_mismatch` | cliente "Aplicación web" sin la dirección local registrada → [docs/autorizar-canal.es.md](docs/autorizar-canal.es.md) |
+| `single value: access_type` | enlace copiado cortado desde la terminal → ábrelo desde `~/.config/yt-pubx/auth-<canal>.txt` |
+| error de conexión en `localhost` después de Permitir | navegador en otra máquina → pega la URL de la barra en la terminal del `auth` |
 | `token OAuth recusado` | token expirado (app en modo Prueba: 7 días) → `yt-pubx auth <canal>` |
 | `thumb não aplicada … verify` | canal sin verificación por teléfono |
 | `legenda não enviada … force-ssl` | token antiguo sin el alcance de subtítulos → `yt-pubx auth` de nuevo |

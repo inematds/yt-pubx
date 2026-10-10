@@ -225,6 +225,7 @@
     <p>It opens the browser; sign in with the account that owns the channel and accept. The token is stored in <code>~/.config/yt-pubx/tokens/</code> with permission 600. For another channel, create another block and repeat with its name.</p>
 <pre><span class="k">yt-pubx auth</span> principal --client-secret ~/.config/yt-pubx/client_secret_XXXX.json
 <span class="k">yt-pubx canais</span>   <span class="c"># * principal  My Channel  ...  ok</span></pre>
+<p><strong>Authorization error?</strong> <code>redirect_uri_mismatch</code>, a broken link, browser on another machine: the <a href="https://github.com/inematds/yt-pubx/blob/main/docs/autorizar-canal.en.md">jargon-free step-by-step guide</a> shows every Google error and the way out. If the final page shows a connection error, copy the URL from the address bar and paste it into the <code>auth</code> terminal.</p>
   </div></div>
 
   <div class="step"><div class="b">5</div><div>
@@ -278,6 +279,7 @@ check the title and description and publish with --plano &lt;folder&gt;/plano.js
   <span class="chip">Roadmap</span>
   <h2>Where it is and where it's going</h2>
   <p class="sub">What already works today and what may come next.</p>
+  <div class="phase"><div class="tag">2.3</div><div class="d"><strong>Stress-free authorization</strong><span>Accepts Web clients, a URL pasted into the terminal when the browser is on another machine, the link saved to a file, and a plain-language guide to Google errors.</span></div></div>
   <div class="phase"><div class="tag">2.0</div><div class="d"><strong>Standalone tool</strong><span>Its own config, unlimited channels, OAuth with <code>yt-pubx auth</code>, thumbnail composer, <code>--dry-run</code> and <code>--plano</code>, scheduling, SRT subtitles.</span></div></div>
   <div class="phase"><div class="tag">Next</div><div class="d"><strong>Playlists and chapters</strong><span>Add the video to a playlist and build chapters from the subtitles.</span></div></div>
   <div class="phase"><div class="tag">Later</div><div class="d"><strong>Batch</strong><span>Publish an entire folder with a single dry-run to review all thumbnails side by side.</span></div></div>
