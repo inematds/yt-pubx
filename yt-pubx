@@ -6,6 +6,7 @@
   yt-pubx canais                                 lista os canais configurados
   yt-pubx publicar <arquivo|URL> [--canal X] [opções]
   yt-pubx atualizar <id|URL> [--description-arquivo X] edita um vídeo já publicado
+  yt-pubx remover <id|URL> --canal X --sim            apaga um vídeo do canal (sem volta)
 
 Sem --title/--description, o Codex CLI escreve título, descrição, tags, frase e cena
 da thumb a partir de --contexto / --contexto-arquivo / --legenda. A arte da thumb sai
@@ -15,7 +16,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime
 
-VERSION = '2.3.0'
+VERSION = '2.4.0'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -656,6 +657,31 @@ def cmd_atualizar(a):
     log(f'Atualizado: https://www.youtube.com/watch?v={vid}')
 
 
+def cmd_remover(a):
+    """Apaga um vídeo do canal (videos.delete). Sem volta: exige --sim e confere que o vídeo é do canal."""
+    import requests
+    cfg = load_config()
+    nome, c = canal(cfg, a.canal)
+    token = access_token(nome, c)
+    vid = re.sub(r'.*(?:v=|youtu\.be/|/video/|/shorts/)([\w-]{11}).*', r'\1', a.video)
+    h = {'Authorization': f'Bearer {token}'}
+    r = requests.get('https://www.googleapis.com/youtube/v3/videos',
+                     params={'part': 'snippet', 'id': vid}, headers=h, timeout=30)
+    itens = r.json().get('items') if r.status_code == 200 else None
+    if not itens:
+        die(f'vídeo {vid} não encontrado ({r.status_code}): {r.text[:200]}')
+    sn = itens[0]['snippet']
+    log(f'{vid} · {sn.get("channelTitle")} · {sn["title"]}')
+    if not a.sim:
+        die('nada apagado: repita com --sim para apagar (não tem volta)')
+    r = requests.delete('https://www.googleapis.com/youtube/v3/videos', params={'id': vid}, headers=h, timeout=60)
+    if r.status_code != 204:
+        die(f'remoção recusada ({r.status_code}): {r.text[:300]}')
+    with open(HISTORICO, 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'removido': vid, 'canal': nome, 'titulo': sn['title'], 'em': time.strftime('%F %T')}, ensure_ascii=False) + '\n')
+    log(f'Removido: {vid} ({sn["title"]})')
+
+
 def main():
     p = argparse.ArgumentParser(prog='yt-pubx', description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -700,6 +726,11 @@ def main():
     u.add_argument('--description-arquivo', help='arquivo com a descrição nova')
     u.add_argument('--tags', help='separadas por vírgula')
     u.set_defaults(fn=cmd_atualizar)
+    rm = sub.add_parser('remover', help='apaga um vídeo do canal (sem volta)')
+    rm.add_argument('video', help='id ou URL do vídeo')
+    rm.add_argument('--canal')
+    rm.add_argument('--sim', action='store_true', help='confirma a remoção')
+    rm.set_defaults(fn=cmd_remover)
     a = p.parse_args()
     a.fn(a)
 

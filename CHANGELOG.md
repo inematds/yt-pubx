@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.4.0 — 2026-10-11
+- `yt-pubx remover <id|URL> --canal X --sim`: apaga um vídeo do canal (videos.delete). Sem `--sim` só mostra qual vídeo seria apagado; a remoção fica registrada no histórico.
+
 ## 2.3.0 — 2026-10-10
 - `yt-pubx auth` aceita client **Aplicativo da Web**: usa o endereço local cadastrado no JSON, ou `--redirect`.
 - Navegador em outra máquina: cole no terminal a URL final (com `code=`) e a autorização termina.
