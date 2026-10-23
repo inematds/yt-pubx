@@ -16,7 +16,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime
 
-VERSION = '2.4.0'
+VERSION = '2.4.1'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -562,7 +562,7 @@ def cmd_publicar(a):
     log(f'Vídeo: {video} ({os.path.getsize(video) / 1e6:.0f} MB, {dur / 60:.1f} min)')
 
     gerado = {}
-    if not a.sem_thumb and vertical(video):
+    if not a.sem_thumb and vertical(video) and dur <= 180:  # vertical > 3 min não é Short: aceita thumb
         a.sem_thumb = True
         log('Vídeo vertical (Short): sem thumb')
     falta_texto = not (a.title and a.description)

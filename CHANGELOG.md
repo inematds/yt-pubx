@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.4.1 — 2026-10-23
+- Vídeo vertical com mais de 3 min não é Short: agora recebe thumb (antes todo vídeo em pé saía sem thumb).
+
 ## 2.4.0 — 2026-10-11
 - `yt-pubx remover <id|URL> --canal X --sim`: apaga um vídeo do canal (videos.delete). Sem `--sim` só mostra qual vídeo seria apagado; a remoção fica registrada no histórico.
 
