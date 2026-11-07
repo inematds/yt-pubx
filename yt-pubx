@@ -14,9 +14,9 @@ do gerador de imagem do Codex (image_gen); um servidor de imagem local é reserv
 """
 import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 
-VERSION = '2.4.1'
+VERSION = '2.5.1'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -528,6 +528,24 @@ def set_legenda(token, vid, srt, idioma):
 
 
 # ── publicar ────────────────────────────────────────────────────────────────
+def ja_publicado(nome, titulo, horas=48):
+    """Mesmo canal + mesmo título nas últimas `horas` → registro do histórico (evita vídeo duplicado)."""
+    if not os.path.exists(HISTORICO):
+        return None
+    norma = lambda s: re.sub(r'\s+', ' ', (s or '').strip().lower())
+    alvo, limite = norma(titulo), datetime.now() - timedelta(hours=horas)
+    achado = None
+    for linha in open(HISTORICO, encoding='utf-8'):
+        try:
+            d = json.loads(linha)
+            quando = datetime.fromisoformat(d.get('data', ''))
+        except (ValueError, TypeError):
+            continue
+        if d.get('canal') == nome and d.get('video_id') and quando >= limite and norma(d.get('titulo')) == alvo:
+            achado = d
+    return achado
+
+
 def cmd_publicar(a):
     cfg = load_config()
     if a.plano:  # reaproveita texto (e arte) de um --dry-run já conferido
@@ -598,6 +616,12 @@ def cmd_publicar(a):
 
     if a.dry_run:
         log('--dry-run: nada foi enviado.')
+        return
+
+    dup = None if a.repetir else ja_publicado(nome, titulo)
+    if dup:
+        log(f'Já publicado neste canal em {dup["data"]} com o mesmo título: não sobe de novo (use --repetir para forçar)')
+        print(f'\nURL: {dup["url"]}\nSTUDIO: https://studio.youtube.com/video/{dup["video_id"]}/edit')
         return
 
     log('Enviando vídeo...')
@@ -712,6 +736,7 @@ def main():
     q.add_argument('--sem-thumb', action='store_true', help='não gera nem envia thumb (automático em vídeo vertical/Short)')
     q.add_argument('--thumb-arte', help='arte pronta: só aplica frase, marca e cores do canal')
     q.add_argument('--privacy', choices=['public', 'unlisted', 'private'])
+    q.add_argument('--repetir', action='store_true', help='sobe mesmo que o canal já tenha vídeo com o mesmo título nas últimas 48 h')
     q.add_argument('--agendar', help='"AAAA-MM-DD HH:MM" (hora local): sobe privado e publica nesse horário')
     q.add_argument('--idioma')
     q.add_argument('--categoria', help='id da categoria (27 = Educação)')

@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.5.1 — 2026-11-07
+- Trava de duplicado: se o canal já recebeu vídeo com o mesmo título nas últimas 48 h, `publicar` não sobe de novo e devolve o `URL:` do que já existe (mesma saída, quem chama segue igual). `--repetir` força. Motivo: o eventosextremos publicou o mesmo vídeo 2× em 05, 06 e 07/11.
+
 ## 2.4.1 — 2026-10-23
 - Vídeo vertical com mais de 3 min não é Short: agora recebe thumb (antes todo vídeo em pé saía sem thumb).
 
