@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.6.1 — 2026-11-07
+- Canal com `"aceita_so_de": ["~/pasta/"]` no config só publica vídeos dessas pastas; o resto sai com `RECUSADO` (código 3) e o motivo de `aceita_so_de_motivo`. `--avulso-ok` libera um vídeo. Primeiro uso: lives10 (eventosextremos) só com as séries automáticas.
+
 ## 2.5.1 — 2026-11-07
 - Trava de duplicado: se o canal já recebeu vídeo com o mesmo título nas últimas 48 h, `publicar` não sobe de novo e devolve o `URL:` do que já existe (mesma saída, quem chama segue igual). `--repetir` força. Motivo: o eventosextremos publicou o mesmo vídeo 2× em 05, 06 e 07/11.
 

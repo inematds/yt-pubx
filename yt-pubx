@@ -16,7 +16,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime, timedelta
 
-VERSION = '2.5.1'
+VERSION = '2.6.1'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -561,6 +561,13 @@ def cmd_publicar(a):
         if not a.thumb and not a.thumb_arte and os.path.exists(arte):
             a.thumb_arte = arte
     nome, c = canal(cfg, a.canal)
+    origens = [os.path.expanduser(o) for o in c.get('aceita_so_de', [])]
+    if origens and not a.avulso_ok and not a.dry_run:
+        local = os.path.abspath(os.path.expanduser(a.video))
+        if not any(local.startswith(o) for o in origens):
+            print(f'RECUSADO: o canal {nome} só recebe as séries automáticas ({", ".join(origens)}). '
+                  f'{c.get("aceita_so_de_motivo", "")} Use --avulso-ok só se o Nei pedir este vídeo neste canal.', flush=True)
+            sys.exit(3)
     a.idioma = a.idioma or c.get('idioma', 'pt')
     privacy = a.privacy or c.get('privacy', 'public')
     log(f'v{VERSION} · canal {nome} = {c.get("nome", "")} {c.get("url", "")}')
@@ -736,6 +743,7 @@ def main():
     q.add_argument('--sem-thumb', action='store_true', help='não gera nem envia thumb (automático em vídeo vertical/Short)')
     q.add_argument('--thumb-arte', help='arte pronta: só aplica frase, marca e cores do canal')
     q.add_argument('--privacy', choices=['public', 'unlisted', 'private'])
+    q.add_argument('--avulso-ok', action='store_true', help='publica num canal com "aceita_so_de" um vídeo de fora dessas pastas')
     q.add_argument('--repetir', action='store_true', help='sobe mesmo que o canal já tenha vídeo com o mesmo título nas últimas 48 h')
     q.add_argument('--agendar', help='"AAAA-MM-DD HH:MM" (hora local): sobe privado e publica nesse horário')
     q.add_argument('--idioma')
