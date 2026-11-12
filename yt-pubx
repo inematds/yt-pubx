@@ -16,7 +16,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime, timedelta
 
-VERSION = '2.6.1'
+VERSION = '2.7.1'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -546,6 +546,48 @@ def ja_publicado(nome, titulo, horas=48):
     return achado
 
 
+def sha256_arquivo(p):
+    h = hashlib.sha256()
+    with open(p, 'rb') as f:
+        for bloco in iter(lambda: f.read(1 << 20), b''):
+            h.update(bloco)
+    return h.hexdigest()
+
+
+def arquivo_ja_publicado(nome, video, soma):
+    """Mesmo canal + mesmo ARQUIVO (sha256), em qualquer data → registro do histórico.
+    Pega o vídeo repetido mesmo com título trocado. Registros antigos sem sha256: compara pelo
+    arquivo de origem, se ainda existe e tem o mesmo tamanho. Vídeo removido do canal não conta."""
+    if not os.path.exists(HISTORICO):
+        return None
+    tam, registros, removidos = os.path.getsize(video), [], set()
+    for linha in open(HISTORICO, encoding='utf-8'):
+        try:
+            d = json.loads(linha)
+        except ValueError:
+            continue
+        if d.get('removido'):
+            removidos.add(d['removido'])
+        elif d.get('canal') == nome and d.get('video_id'):
+            registros.append(d)
+    cache = {}
+    for d in reversed(registros):
+        if d['video_id'] in removidos:
+            continue
+        if d.get('sha256'):
+            if d['sha256'] == soma:
+                return d
+            continue
+        o = os.path.expanduser(d.get('origem') or '')
+        if not o or re.match(r'https?://', o) or not os.path.isfile(o) or os.path.getsize(o) != tam:
+            continue
+        if o not in cache:
+            cache[o] = sha256_arquivo(o)
+        if cache[o] == soma:
+            return d
+    return None
+
+
 def cmd_publicar(a):
     cfg = load_config()
     if a.plano:  # reaproveita texto (e arte) de um --dry-run já conferido
@@ -585,6 +627,13 @@ def cmd_publicar(a):
     video, baixado = obter_video(a.video, work, cfg)
     dur = duracao(video)
     log(f'Vídeo: {video} ({os.path.getsize(video) / 1e6:.0f} MB, {dur / 60:.1f} min)')
+    soma = sha256_arquivo(video)
+    dup = None if (a.repetir or a.dry_run) else arquivo_ja_publicado(nome, video, soma)
+    if dup:  # o YouTube enterra o arquivo repetido (~98% menos views): não sobe e devolve o que já existe
+        log(f'Este mesmo arquivo já foi publicado neste canal em {dup["data"]} ("{dup.get("titulo", "")}"): '
+            f'não sobe de novo (use --repetir para forçar)')
+        print(f'\nURL: {dup["url"]}\nSTUDIO: https://studio.youtube.com/video/{dup["video_id"]}/edit')
+        return
 
     gerado = {}
     if not a.sem_thumb and vertical(video) and dur <= 180:  # vertical > 3 min não é Short: aceita thumb
@@ -648,7 +697,7 @@ def cmd_publicar(a):
         f.write(json.dumps({'data': datetime.now().isoformat(timespec='seconds'), 'canal': nome,
                             'video_id': vid, 'url': url, 'titulo': titulo, 'privacy': status,
                             'thumb_ok': ok, 'legenda_ok': leg_ok, 'origem': a.video,
-                            'trabalho': work}, ensure_ascii=False) + '\n')
+                            'trabalho': work, 'sha256': soma}, ensure_ascii=False) + '\n')
     if baixado and not a.manter:
         os.remove(video)
         log('Cópia baixada do vídeo apagada (use --manter para guardar)')
@@ -744,7 +793,7 @@ def main():
     q.add_argument('--thumb-arte', help='arte pronta: só aplica frase, marca e cores do canal')
     q.add_argument('--privacy', choices=['public', 'unlisted', 'private'])
     q.add_argument('--avulso-ok', action='store_true', help='publica num canal com "aceita_so_de" um vídeo de fora dessas pastas')
-    q.add_argument('--repetir', action='store_true', help='sobe mesmo que o canal já tenha vídeo com o mesmo título nas últimas 48 h')
+    q.add_argument('--repetir', action='store_true', help='sobe mesmo que o canal já tenha o mesmo arquivo (qualquer data) ou o mesmo título nas últimas 48 h')
     q.add_argument('--agendar', help='"AAAA-MM-DD HH:MM" (hora local): sobe privado e publica nesse horário')
     q.add_argument('--idioma')
     q.add_argument('--categoria', help='id da categoria (27 = Educação)')

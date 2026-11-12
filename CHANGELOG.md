@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.7.1 — 2026-11-11
+- Trava por arquivo: antes de gerar texto ou subir, o `publicar` calcula o sha256 do vídeo; se o mesmo arquivo já foi publicado NESTE canal (em qualquer data, com qualquer título), não sobe e devolve o `URL:` do que existe. `--repetir` força; vídeo apagado com `remover` não conta. O histórico passa a guardar `sha256`; registros antigos são comparados pelo arquivo de origem. Motivo: futviral e contaviral subiram o vídeo da véspera de novo por 7 dias (28/10–07/11), e o repetido teve ~98% menos views.
+
 ## 2.6.1 — 2026-11-07
 - Canal com `"aceita_so_de": ["~/pasta/"]` no config só publica vídeos dessas pastas; o resto sai com `RECUSADO` (código 3) e o motivo de `aceita_so_de_motivo`. `--avulso-ok` libera um vídeo. Primeiro uso: lives10 (eventosextremos) só com as séries automáticas.
 
