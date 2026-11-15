@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.8.1 — 2026-11-15
+- Tipo, provedor, modelo e esforço independentes para metadados; imagem continua Codex assinatura. Configuração comentada na pasta do usuário, APIs desativadas e sem fallback pago.
+
 ## 2.7.1 — 2026-11-11
 - Trava por arquivo: antes de gerar texto ou subir, o `publicar` calcula o sha256 do vídeo; se o mesmo arquivo já foi publicado NESTE canal (em qualquer data, com qualquer título), não sobe e devolve o `URL:` do que existe. `--repetir` força; vídeo apagado com `remover` não conta. O histórico passa a guardar `sha256`; registros antigos são comparados pelo arquivo de origem. Motivo: futviral e contaviral subiram o vídeo da véspera de novo por 7 dias (28/10–07/11), e o repetido teve ~98% menos views.
 

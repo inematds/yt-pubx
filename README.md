@@ -212,3 +212,7 @@ uma troca de frase na thumb e três publicações com thumb em menos de 5 minuto
 ## Licença
 
 MIT. Projeto educacional independente; não é produto do Google, do YouTube nem da OpenAI.
+
+## Modelo e esforço por etapa
+
+Use Python 3.11+ com `pip install -r requirements.txt` (requests, Pillow e PyYAML). Configuração comentada em `~/.config/yt-pubx/ia.yaml`, exemplo em `ia.exemplo.yaml`; comandos em [IA.md](IA.md). Metadados configuráveis, imagem Codex pela assinatura, tradução no inema-traduz.

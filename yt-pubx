@@ -16,7 +16,7 @@ import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
 import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime, timedelta
 
-VERSION = '2.7.1'
+VERSION = '2.8.1'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -272,17 +272,10 @@ def duracao(p):
 
 # ── Codex ───────────────────────────────────────────────────────────────────
 def codex(prompt, cwd, modelo='', bypass=False, timeout=600):
-    out = os.path.join(cwd, '_codex_out.txt')
-    cmd = ['codex', 'exec', '--skip-git-repo-check'] + (['-m', modelo] if modelo else [])
-    cmd += ['--dangerously-bypass-approvals-and-sandbox'] if bypass else ['-s', 'read-only']
-    cmd += ['-o', out, '-']
-    r = subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    txt = open(out, encoding='utf-8').read() if os.path.exists(out) else ''
-    if os.path.exists(out):
-        os.remove(out)
-    if r.returncode != 0 and not txt:
-        raise RuntimeError(f'codex exec falhou: {(r.stderr or r.stdout)[-400:]}')
-    return txt
+    # Nome legado da função, transporte efetivo independente por etapa.
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    from ia_motor import executar
+    return executar('capa' if bypass else 'metadados', prompt, cwd, agente=bypass)
 
 
 def srt_texto(p, limite=14000):
@@ -305,7 +298,8 @@ def gerar_metadados(a, c, video, dur, work, modelo):
         ctx.append(f'Descrição já definida (não mude):\n{a.description}')
     if not ctx:
         die('sem --title/--description e sem --contexto/--contexto-arquivo/--legenda: não há do que escrever')
-    idioma = {'pt': 'português do Brasil', 'es': 'espanhol', 'en': 'inglês'}.get(a.idioma, a.idioma)
+    idioma_alvo = a.idioma or 'pt'
+    idioma = 'português do Brasil'  # Criação PT; tradução central separada abaixo.
     sobre = f'\nSobre o canal: {c["sobre"]}' if c.get('sobre') else ''
     fim = (f'termina com esta linha exata: "{c["assinatura"]}" e 3 a 5 hashtags' if c.get('assinatura')
            else 'termina com 3 a 5 hashtags')
@@ -325,7 +319,26 @@ Não use os caracteres < e >."""
     m = re.search(r'\{.*\}', txt, re.S)
     if not m:
         die(f'Codex não devolveu JSON: {txt[:300]}')
-    return json.loads(m.group(0))
+    dados = json.loads(m.group(0))
+    if idioma_alvo.lower().split('-')[0] != 'pt':
+        import shutil
+        tradutor = shutil.which('inema-traduz')
+        if not tradutor:
+            raise RuntimeError('Tradução exige inema-traduz pela assinatura')
+        campos = {k: dados[k] for k in ('titulo', 'descricao', 'tags', 'frase_thumb')}
+        pedido = ('Traduza os valores textuais deste JSON para '+idioma_alvo+'. Preserve chaves, estrutura, '
+                  'números, URLs, nomes de marcas/produtos e quantidade de tags. Responda só o JSON traduzido, sem crases.\n'+json.dumps(campos,ensure_ascii=False))
+        r = subprocess.run([tradutor],input=pedido,text=True,capture_output=True,timeout=900)
+        if r.returncode:
+            raise RuntimeError('Tradutor central falhou; não publicar metadados no idioma errado')
+        txt = r.stdout.strip()
+        if txt.startswith('```'):
+            txt = re.sub(r'^```[^\n]*\n','',txt);txt = re.sub(r'\n```\s*$','',txt)
+        tr = json.loads(txt)
+        if set(tr) != set(campos) or any(not isinstance(tr[k],str) or not tr[k].strip() for k in ('titulo','descricao','frase_thumb')) or not isinstance(tr['tags'],list) or len(tr['tags'])!=len(campos['tags']):
+            raise RuntimeError('Tradução com estrutura inválida')
+        dados.update(tr)
+    return dados
 
 
 # ── thumb ───────────────────────────────────────────────────────────────────

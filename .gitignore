@@ -3,3 +3,6 @@ __pycache__/
 *.srt
 client_secret*.json
 tokens/
+
+**/ia-execucoes.jsonl
+ia.lock
