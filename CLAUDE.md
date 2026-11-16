@@ -18,6 +18,12 @@ Regras:
 - Versão em `VERSION` dentro de `yt-pubx`; registrar no CHANGELOG.md.
 - Testar mudança com `--dry-run` + `--thumb-arte` (não gasta geração nem publica).
 
+## Distribuição das publicações diretas — lives1 e lives4
+
+Após publicar diretamente no **lives1**, encaminhar também o conteúdo ao **Metricool da conta inematds**, marca **inema.tds**, como no lives4 (ordem do Nei, 16/11/2026). Não pedir outro OK para essa etapa. Conector correto: `metricool-inematds`; redes Instagram/TikTok vinculadas à marca. Referência: `~/projetos/metricool-inematds/README.md` e `publicar.sh` com `MARCA=inema.tds`.
+
+Respeitar a validação de formato/duração e `intervalo.py` (mínimo de uma hora entre posts da mesma marca). Se o arquivo não for aceito pelo fluxo existente, registrar/avisar a pendência, sem cortar ou converter arbitrariamente e sem dizer que agendou. Não republicar histórico por causa dessa nova regra. O upload do YouTube só conclui a etapa YouTube; exigir recibo próprio do Metricool antes de declarar essa distribuição concluída.
+
 ## Self-learning
 
 When I correct you, or you catch yourself making a mistake: before continuing, add the lesson as a one-line rule under ## Lessons, so it never happens again.
