@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.9.1 — 2026-11-16
+- Pós-publicação configurável por canal para uploads públicos imediatos, com adaptador para um publicador Metricool existente. Entrega registrada separadamente, vídeo preservado em falhas e comando `distribuir` para retomar sem repetir o upload. Uploads privados, não listados, agendados e dry-run não distribuem. Resultado ambíguo exige conferir o recibo antes de retomar.
+
 ## 2.8.1 — 2026-11-15
 - Tipo, provedor, modelo e esforço independentes para metadados; imagem continua Codex assinatura. Configuração comentada na pasta do usuário, APIs desativadas e sem fallback pago.
 

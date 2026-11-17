@@ -24,6 +24,8 @@ Após publicar diretamente no **lives1**, encaminhar também o conteúdo ao **Me
 
 Respeitar a validação de formato/duração e `intervalo.py` (mínimo de uma hora entre posts da mesma marca). Se o arquivo não for aceito pelo fluxo existente, registrar/avisar a pendência, sem cortar ou converter arbitrariamente e sem dizer que agendou. Não republicar histórico por causa dessa nova regra. O upload do YouTube só conclui a etapa YouTube; exigir recibo próprio do Metricool antes de declarar essa distribuição concluída.
 
+A integração executável existe desde v2.9.1 e está configurada localmente em lives1 e lives4. Ver [docs/pos-publicacao.md](docs/pos-publicacao.md) para configuração, estados e retomada. Não chamar o publicador novamente por fora após o hook concluir.
+
 ## Self-learning
 
 When I correct you, or you catch yourself making a mistake: before continuing, add the lesson as a one-line rule under ## Lessons, so it never happens again.

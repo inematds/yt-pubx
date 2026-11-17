@@ -1,5 +1,6 @@
 | data | o que quebrou | menor correção | tipo |
 |---|---|---|---|
+| 2026-11-16 | Pedido de encaminhamento lives1 → Metricool foi entregue só como documentação | integrar hook pós-upload, configurar canais e testar entrega/retomada sem duplicar YouTube | prompt |
 | 2026-11-11 | futviral (lives24) e contaviral (lives2) republicaram o vídeo da véspera por 7 dias (28/10–07/11); o Nei não sabia, e o repetido teve ~98% menos views | trava por sha256 do arquivo no mesmo canal, em qualquer data (2.7.1) | infra |
 | 2026-11-07 | mesmo vídeo publicado 2× no lives10 em 05/11 ("2.595 cidades"), 06/11 ("Tornado no Brasil") e 07/11 ("Granizo") — dois fluxos chamando publicar com o mesmo vídeo | trava: mesmo canal + mesmo título em 48 h devolve o URL existente (2.5.1) | infra |
 | 2026-10-23 | verticais de 3–4 min (Outubro Negro e eMudhra 9:16, lives1 e lives4) saíram sem thumb: todo vídeo em pé era tratado como Short | sem thumb só se vertical E ≤ 180 s; thumbs aplicadas depois com `set_thumb` | infra |

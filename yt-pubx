@@ -13,10 +13,10 @@ da thumb a partir de --contexto / --contexto-arquivo / --legenda. A arte da thum
 do gerador de imagem do Codex (image_gen); um servidor de imagem local é reserva opcional.
 """
 import argparse, base64, glob, hashlib, http.server, io, json, os, re, secrets
-import shlex, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
+import shlex, shutil, subprocess, sys, tempfile, threading, time, urllib.parse, webbrowser
 from datetime import datetime, timedelta
 
-VERSION = '2.8.1'
+VERSION = '2.9.1'
 CONFIG_DIR = os.path.expanduser(os.environ.get('YTPUBX_CONFIG', '~/.config/yt-pubx'))
 CONFIG = os.path.join(CONFIG_DIR, 'config.json')
 DATA_DIR = os.path.expanduser(os.environ.get('YTPUBX_DATA', '~/.local/share/yt-pubx'))
@@ -601,6 +601,95 @@ def arquivo_ja_publicado(nome, video, soma):
     return None
 
 
+def salvar_json_atomico(path, data):
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def executar_pos_publicacao(pasta):
+    """Entrega pendente, sem chamar o upload do YouTube. Uma execução por evento."""
+    import fcntl
+    evento_path = os.path.join(pasta, 'evento.json')
+    estado_path = os.path.join(pasta, 'estado.json')
+    with open(os.path.join(pasta, 'execucao.lock'), 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        anterior = {}
+        if os.path.exists(estado_path):
+            with open(estado_path, encoding='utf-8') as f:
+                anterior = json.load(f)
+        if anterior.get('status') == 'concluido':
+            return True
+        if anterior.get('status') == 'executando':
+            log(f'AVISO: pós-publicação interrompida/ambígua; confira {pasta} antes de reenviar')
+            return False
+        with open(evento_path, encoding='utf-8') as f:
+            evento = json.load(f)
+        comando = evento['destino']['comando']
+        if not isinstance(comando, list) or not comando or not all(isinstance(x, str) for x in comando):
+            raise ValueError('pos_publicar.comando deve ser uma lista de argumentos')
+        env = {**os.environ, **evento['destino'].get('ambiente', {})}
+        salvar_json_atomico(estado_path, {'status': 'executando', 'inicio': datetime.now().isoformat()})
+        try:
+            with open(os.path.join(pasta, 'execucao.log'), 'ab') as out:
+                result = subprocess.run([os.path.expanduser(x) for x in comando] + [evento_path],
+                                        env=env, stdout=out, stderr=subprocess.STDOUT,
+                                        timeout=int(evento['destino'].get('timeout', 1800)))
+            ok = result.returncode == 0
+            estado = {'status': 'concluido' if ok else 'pendente', 'codigo': result.returncode}
+        except subprocess.TimeoutExpired:
+            ok = False
+            estado = {'status': 'executando', 'erro': 'timeout; resultado externo ambíguo: conferir recibo antes de reenviar'}
+        except OSError as e:
+            ok = False
+            estado = {'status': 'pendente', 'erro': str(e)}
+        estado['fim'] = datetime.now().isoformat()
+        salvar_json_atomico(estado_path, estado)
+        if ok:
+            # O recibo é permanente; a cópia de trabalho pode sair após confirmação do destino.
+            try:
+                os.remove(evento['video'])
+            except OSError as e:
+                log(f'AVISO: entrega confirmada, mas limpeza pendente: {e}')
+        log(('Pós-publicação concluída: ' if ok else 'AVISO: YouTube publicado; distribuição pendente: ') + pasta)
+        return ok
+
+
+def pos_publicar(nome, c, vid, url, video, titulo, descricao, status):
+    destino = c.get('pos_publicar')
+    # Nunca distribuir material privado/não listado ou antes da data de um upload agendado.
+    if not destino or status.get('privacyStatus') != 'public' or status.get('publishAt'):
+        return True
+    try:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', nome + '-' + vid):
+            raise ValueError('identificador inválido para pós-publicação')
+        pasta = os.path.join(DATA_DIR, 'pos-publicacao', nome + '-' + vid)
+        os.makedirs(pasta, mode=0o700, exist_ok=True)
+        evento_path = os.path.join(pasta, 'evento.json')
+        if not os.path.exists(evento_path):
+            copia = os.path.join(pasta, 'video.mp4')
+            shutil.copy2(video, copia)
+            salvar_json_atomico(evento_path, {'canal': nome, 'video_id': vid, 'url': url,
+                                           'video': copia, 'titulo': titulo, 'descricao': descricao,
+                                           'destino': destino})
+        return executar_pos_publicacao(pasta)
+    except Exception as e:
+        log(f'AVISO: YouTube publicado; não foi possível concluir a distribuição: {e}')
+        return False
+
+
+def cmd_distribuir(a):
+    nome, _ = canal(load_config(), a.canal)
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', nome + '-' + a.video_id):
+        die('identificador inválido')
+    pasta = os.path.join(DATA_DIR, 'pos-publicacao', nome + '-' + a.video_id)
+    if not os.path.isfile(os.path.join(pasta, 'evento.json')):
+        die('não existe entrega registrada para esse vídeo; nenhum upload será feito')
+    if not executar_pos_publicacao(pasta):
+        sys.exit(2)
+
+
 def cmd_publicar(a):
     cfg = load_config()
     if a.plano:  # reaproveita texto (e arte) de um --dry-run já conferido
@@ -679,7 +768,7 @@ def cmd_publicar(a):
             'status': status}
     plano = {'canal': nome, 'canal_nome': c.get('nome', ''), 'video': video, 'thumb': thumb,
              'frase_thumb': frase, 'cena_thumb': cena, 'youtube': meta}
-    json.dump(plano, open(os.path.join(work, 'plano.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    salvar_json_atomico(os.path.join(work, 'plano.json'), plano)
     print(f'\nTÍTULO: {titulo}\nTAGS: {", ".join(tags)}\nPRIVACIDADE: {status}\nTHUMB: {thumb}\n'
           f'DESCRIÇÃO:\n{descricao}\n\nPLANO: {os.path.join(work, "plano.json")}\n', flush=True)
 
@@ -711,7 +800,8 @@ def cmd_publicar(a):
                             'video_id': vid, 'url': url, 'titulo': titulo, 'privacy': status,
                             'thumb_ok': ok, 'legenda_ok': leg_ok, 'origem': a.video,
                             'trabalho': work, 'sha256': soma}, ensure_ascii=False) + '\n')
-    if baixado and not a.manter:
+    entregue = pos_publicar(nome, c, vid, url, video, titulo, descricao, status)
+    if baixado and not a.manter and entregue:
         os.remove(video)
         log('Cópia baixada do vídeo apagada (use --manter para guardar)')
     print(f'\nURL: {url}\nSTUDIO: https://studio.youtube.com/video/{vid}/edit')
@@ -813,6 +903,10 @@ def main():
     q.add_argument('--dry-run', action='store_true', help='gera tudo e para antes de enviar')
     q.add_argument('--manter', action='store_true', help='não apaga o vídeo baixado de URL')
     q.set_defaults(fn=cmd_publicar)
+    d = sub.add_parser('distribuir', help='retoma uma entrega pós-publicação sem reenviar ao YouTube')
+    d.add_argument('video_id', help='id de um vídeo que já tem entrega registrada')
+    d.add_argument('--canal', required=True)
+    d.set_defaults(fn=cmd_distribuir)
     u = sub.add_parser('atualizar', help='edita título/descrição/tags de um vídeo publicado')
     u.add_argument('video', help='id ou URL do vídeo')
     u.add_argument('--canal')
