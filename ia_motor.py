@@ -36,6 +36,105 @@ ESFORCOS = {'claude': {'low', 'medium', 'high', 'xhigh', 'max'},
             'openai': {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'},
             'openrouter': {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'}}
 
+# Trava de cota compartilhada (17/11/2026): mesma tabela `pools` do EngineBridge (~/.local/state/enginebridge).
+# Só usa `blocked` e `until`; nunca a concessão exclusiva (lease), para não serializar os crons.
+COTA_DB_ENV = 'INEMA_COTA_DB'
+COTA_PADRAO_S = 3600          # recusa de cota sem horário legível
+LIMITE_CURTO_S = 300          # rate limit momentâneo (429 sem usage_limit_reached)
+MESES = {m: i for i, m in enumerate(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], 1)}
+
+
+class CotaEsgotada(RuntimeError):
+    """Conta sem cota: o chamador deve ESPERAR (ou usar a reserva declarada), nunca contar como erro do conteúdo."""
+    def __init__(self, motor, ate=None, manual=False):
+        self.motor, self.ate, self.manual = motor, ate, manual
+        quando = 'bloqueio manual' if manual else (
+            'até ' + dt.datetime.fromtimestamp(ate).strftime('%d/%m %H:%M') if ate else 'sem horário de volta')
+        super().__init__(f'{motor} sem cota ({quando})')
+
+
+def cota_db():
+    return Path(os.environ.get(COTA_DB_ENV, Path.home()/'.local/state/enginebridge/state.sqlite')).expanduser()
+
+
+def _db():
+    import sqlite3
+    p = cota_db()
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    db = sqlite3.connect(p, timeout=10)
+    db.execute("CREATE TABLE IF NOT EXISTS pools (pool TEXT PRIMARY KEY, blocked INTEGER DEFAULT 0, until REAL DEFAULT 0, owner TEXT, lease REAL DEFAULT 0)")
+    return db
+
+
+def pool(c):
+    """Identidade da cota: motor + perfil de login (perfis Codex diferentes podem ser usuários diferentes)."""
+    if c['motor'] == 'claude':
+        return 'claude:' + str(Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home()/'.claude')).expanduser())
+    home = c.get('codex_home') or os.environ.get('CODEX_HOME', Path.home()/'.codex')
+    return 'codex:' + str(Path(home).expanduser().resolve())
+
+
+def cota_conferir(c):
+    """Antes de abrir o programa: conta bloqueada levanta CotaEsgotada na hora. Falha do banco não impede a chamada."""
+    try:
+        with _db() as db:
+            linha = db.execute('SELECT blocked, until FROM pools WHERE pool=?', (pool(c),)).fetchone()
+    except Exception:
+        return
+    if linha and linha[0]:
+        raise CotaEsgotada(c['motor'], manual=True)
+    if linha and linha[1] > time.time():
+        raise CotaEsgotada(c['motor'], linha[1])
+
+
+def cota_registrar(c, ate):
+    try:
+        with _db() as db:
+            db.execute('INSERT INTO pools(pool, until) VALUES (?, ?) ON CONFLICT(pool) DO UPDATE SET until=MAX(pools.until, excluded.until)',
+                       (pool(c), ate))
+    except Exception:
+        pass
+
+
+def horario_volta(texto, agora=None):
+    """'resets 9pm (America/Sao_Paulo)' ou 'resets Nov 16, 9pm (…)' → epoch; None se ilegível ou absurdo."""
+    from zoneinfo import ZoneInfo
+    m = re.search(r'resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2}),\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([A-Za-z_]+/[A-Za-z_/]+)\)', texto or '')
+    if not m:
+        return None
+    try:
+        tz = ZoneInfo(m[6])
+        agora = agora or time.time()
+        hoje = dt.datetime.fromtimestamp(agora, tz)
+        h = int(m[3]) % 12 + (12 if m[5] == 'pm' else 0)
+        if m[1]:
+            alvo = hoje.replace(month=MESES[m[1]], day=int(m[2]), hour=h, minute=int(m[4] or 0), second=0, microsecond=0)
+        else:
+            alvo = hoje.replace(hour=h, minute=int(m[4] or 0), second=0, microsecond=0)
+            if alvo.timestamp() <= agora:
+                alvo += dt.timedelta(days=1)
+        ts = alvo.timestamp()
+    except (KeyError, ValueError):
+        return None
+    return ts if agora < ts <= agora + 8 * 86400 else None
+
+
+def recusa_cota_claude(stdout, agora=None):
+    """Só a recusa ESTRUTURADA do Claude Code (JSON is_error + campos de API) conta; texto de resposta normal nunca.
+    Devolve o epoch de volta, ou None se não for recusa de cota. Exemplo real em teste_ia.py (16/11/2026)."""
+    try:
+        j = json.loads(stdout)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(j, dict) or j.get('is_error') is not True:
+        return None
+    agora = agora or time.time()
+    if j.get('api_error') == 'usage_limit_reached':
+        return horario_volta(j.get('result', ''), agora) or agora + COTA_PADRAO_S
+    if j.get('api_error_status') == 429 or j.get('api_error_type') == 'rate_limit_error':
+        return agora + LIMITE_CURTO_S
+    return None
+
 
 def carregar(arquivo=None):
     p = Path(arquivo or os.environ.get(CONFIG_ENV, CONFIG)).expanduser().resolve()
@@ -76,6 +175,21 @@ def validar(d):
                 raise ValueError('API exige chave_nome e arquivo_chaves (não o valor da chave)')
             if not isinstance(cred.get('autorizada'), bool) or not isinstance(cred.get('autorizacao'), str):
                 raise ValueError(f'{motor}: autorizada deve ser booleano e autorizacao deve ser texto')
+        alt = c.get('alternativa')
+        if alt is not None:
+            # Reserva só entre assinaturas, só texto/visão, só quando a cota do principal está confirmada como esgotada.
+            if tipo != 'assinatura' or c.get('capacidade') not in {'texto', 'visao'}:
+                raise ValueError(f'{nome}: alternativa só para assinatura com capacidade texto ou visao')
+            if not isinstance(alt, dict) or set(alt) - {'motor', 'modelo', 'esforco'} or alt.get('motor') not in {'claude', 'codex'}:
+                raise ValueError(f'{nome}: alternativa = {{motor: claude|codex, modelo, esforco}} (assinatura)')
+            if alt['motor'] == motor:
+                raise ValueError(f'{nome}: alternativa deve usar o outro motor')
+            if not isinstance(alt.get('modelo'), str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*', alt['modelo']):
+                raise ValueError(f'{nome}: alternativa sem ID de modelo válido')
+            if alt['motor'] == 'claude' and not alt['modelo'].startswith('claude-'):
+                raise ValueError(f'{nome}: alternativa Claude exige ID completo claude-...')
+            if alt.get('esforco') not in ESFORCOS[alt['motor']]:
+                raise ValueError(f'{nome}: esforço inválido na alternativa')
 
 
 def ambiente(c=None):
@@ -96,7 +210,8 @@ def comando(c, ferramentas='', agente=False, saida=None):
         settings = {'model': c['modelo'], 'effortLevel': c['esforco'],
                     'advisorModel': None, 'switchModelsOnFlag': False, 'modelSettings': {c['modelo']: {'effortLevel': c['esforco']}}}
         cmd = [str(Path.home()/'.local/bin/claude'), '-p', '--model', c['modelo'],
-               '--effort', c['esforco'], '--settings', json.dumps(settings), '--output-format', 'json']
+               '--effort', c['esforco'], '--settings', json.dumps(settings), '--output-format', 'json',
+               '--no-session-persistence']  # chamadas automáticas não acumulam sessões no disco (lote-135, 4,9 GB)
         if agente:
             cmd += ['--add-dir', str(RAIZ)]
             if ferramentas:
@@ -254,7 +369,46 @@ def chamar_api(c, api, prompt, imagens):
     return text, {'modelo_retornado': d.get('model'), 'uso': d.get('usage')}
 
 
-def executar(etapa, pedido, pasta, *, arquivos=(), imagens=(), ferramentas='', agente=False):
+def rodar_assinatura(c, prompt, pasta, imagens, ferramentas, agente, evento):
+    """Uma tentativa num CLI de assinatura. Trava conferida antes; recusa estruturada de cota grava a trava."""
+    cota_conferir(c)
+    with tempfile.TemporaryDirectory(prefix='inema-ia-') as tmp:
+        out = Path(tmp)/'resposta.txt'
+        cmd = comando(c, ferramentas, agente, out)
+        if c['motor'] == 'codex' and imagens:
+            cmd[-1:-1] = sum((['-i', str(p)] for p in imagens), [])
+        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                           cwd=pasta, env=ambiente(c), timeout=c['timeout'])
+        if c['motor'] == 'claude':
+            ate = recusa_cota_claude(r.stdout)
+            if ate:
+                cota_registrar(c, ate)
+                raise CotaEsgotada('claude', ate)
+        # Codex: sem recusa real de cota registrada (17/11/2026); não adivinhar pelo texto, que pode ecoar o pedido.
+        if r.returncode:
+            raise RuntimeError(f'{c["motor"]} encerrou com código {r.returncode}; verifique cota/login/modelo')
+        if c['motor'] == 'claude':
+            j = json.loads(r.stdout)
+            if j.get('is_error'):
+                raise RuntimeError('Claude retornou erro; verifique cota/login/modelo')
+            evento['uso'] = j.get('usage', {})
+            evento['modelos_retornados'] = list(j.get('modelUsage', {}))
+            return j.get('result', '')
+        return out.read_text() if out.exists() else ''
+
+
+def rotas(c, preferir=None):
+    """Principal e, se declarada, a reserva (texto/visão). `preferir` (ex.: R7X_CRITICO=codex) põe esse motor primeiro."""
+    lista = [c]
+    if c.get('alternativa'):
+        lista.append({**c, **c['alternativa'], 'tipo': 'assinatura'})
+        lista[-1].pop('alternativa', None)
+    if preferir:
+        lista.sort(key=lambda r: r['motor'] != preferir)
+    return lista
+
+
+def executar(etapa, pedido, pasta, *, arquivos=(), imagens=(), ferramentas='', agente=False, preferir=None):
     d = carregar()
     c = dict(d['etapas'][etapa])
     c['_etapa'] = etapa
@@ -290,24 +444,20 @@ def executar(etapa, pedido, pasta, *, arquivos=(), imagens=(), ferramentas='', a
             res, info = chamar_api(c, api, prompt, imagens)
             evento.update(info)
         else:
-            with tempfile.TemporaryDirectory(prefix='inema-ia-') as tmp:
-                out = Path(tmp)/'resposta.txt'
-                cmd = comando(c, ferramentas, agente, out)
-                if c['motor'] == 'codex' and imagens:
-                    cmd[-1:-1] = sum((['-i', str(p)] for p in imagens), [])
-                r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                                   cwd=pasta, env=ambiente(c), timeout=c['timeout'])
-                if r.returncode:
-                    raise RuntimeError(f'{c["motor"]} encerrou com código {r.returncode}; verifique cota/login/modelo')
-                if c['motor'] == 'claude':
-                    j = json.loads(r.stdout)
-                    if j.get('is_error'):
-                        raise RuntimeError('Claude retornou erro; verifique cota/login/modelo')
-                    res = j.get('result', '')
-                    evento['uso'] = j.get('usage', {})
-                    evento['modelos_retornados'] = list(j.get('modelUsage', {}))
-                else:
-                    res = out.read_text() if out.exists() else ''
+            ultimo = None
+            for i, rc in enumerate(rotas(c, preferir) if not agente else [c]):
+                try:
+                    res = rodar_assinatura(rc, prompt, pasta, imagens, ferramentas, agente, evento)
+                except CotaEsgotada as e:
+                    ultimo = e
+                    evento.setdefault('sem_cota', []).append(rc['motor'])
+                    continue
+                if rc is not c or i:
+                    evento.update(motor=rc['motor'], modelo=rc['modelo'], esforco=rc['esforco'],
+                                  reserva=bool(evento.get('sem_cota')))  # False = só preferência (ex.: R7X_CRITICO)
+                break
+            else:
+                raise ultimo
         res = limpar(res)
         if not res:
             raise ValueError('Motor respondeu sem conteúdo final')
@@ -334,6 +484,9 @@ def mostrar(d):
     print(f'{"ETAPA":24} {"TIPO":12} {"MOTOR":11} {"MODELO":23} ESFORÇO')
     for n, c in d['etapas'].items():
         print(f'{n:24} {c["tipo"]:12} {c["motor"]:11} {c["modelo"]:23} {c["esforco"]}')
+        if c.get('alternativa'):
+            a = c['alternativa']
+            print(f'{"  ↳ reserva (sem cota)":24} {"assinatura":12} {a["motor"]:11} {a["modelo"]:23} {a["esforco"]}')
     for motor in ('anthropic', 'openai', 'openrouter'):
         api = configuracao_api(d, {'motor': motor})
         print(f'API {motor}:', 'autorizada (consumo pago)' if api['autorizada'] else 'desativada')
@@ -376,6 +529,10 @@ def main():
     for n in ('tipo', 'motor', 'modelo', 'esforco'):
         cp.add_argument('--'+n)
     cp.add_argument('--chave-nome')
+    kp = sp.add_parser('cota', help='Ver ou liberar a trava de cota (sem chamar modelo)')
+    kp.add_argument('acao', choices=['ver', 'liberar'])
+    kp.add_argument('--motor', choices=['claude', 'codex'])
+    kp.add_argument('--codex-home')
     rp = sp.add_parser('executar')
     rp.add_argument('etapa', choices=ETAPAS)
     rp.add_argument('--pasta', default='.')
@@ -408,6 +565,20 @@ def main():
                 tmp = Path(f.name)
             tmp.replace(p)
         mostrar(d)
+    elif a.cmd == 'cota':
+        with _db() as db:
+            if a.acao == 'liberar':
+                if not a.motor:
+                    raise ValueError('Informe --motor claude|codex')
+                alvo = pool({'motor': a.motor, 'codex_home': a.codex_home})
+                db.execute('UPDATE pools SET until=0 WHERE pool=?', (alvo,))  # bloqueio manual continua no EngineBridge
+                print('Liberado:', alvo)
+            for nome, bloq, ate in db.execute('SELECT pool, blocked, until FROM pools ORDER BY pool'):
+                if ate > time.time():
+                    estado = 'sem cota até ' + dt.datetime.fromtimestamp(ate).strftime('%d/%m %H:%M')
+                else:
+                    estado = 'bloqueio manual' if bloq else 'livre'
+                print(f'{nome:45} {estado}')
     elif a.cmd in ('ver', 'validar'):
         mostrar(carregar())
         if a.cmd == 'validar': print('Configuração válida. Nenhum modelo ou API foi chamado.')
